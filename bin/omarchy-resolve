@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# omarchy-resolve — DaVinci Resolve installer and health engine for Omarchy
+# (Arch Linux + Hyprland + NVIDIA).
+#
+# This is the engine behind both the terminal installer and the Omarchy shell
+# plugin. The work is split into a root phase and a user phase so a GUI caller
+# can authenticate exactly once, with pkexec, and so nothing that belongs in
+# the user's home is ever written as root.
+#
+#   omarchy-resolve check                      preflight, JSON, unprivileged
+#   omarchy-resolve install                    full install (asks for sudo)
+#   omarchy-resolve install --phase root       system work; needs root
+#   omarchy-resolve install --phase user       session work; must NOT be root
+#   omarchy-resolve uninstall --phase root|user
+#   omarchy-resolve diagnose                   health checks, JSON
+#   omarchy-resolve probe <file>               codec check (ProRes RAW trap)
+#   omarchy-resolve nvenc-test                 confirm NVENC actually encodes
+#   omarchy-resolve logs [lines]               tail ResolveDebug.txt
+#   omarchy-resolve launch                     start Resolve via the wrapper
+#
+# Global flags: --machine (emit @@ progress events), --dry-run (print writes).
+
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(dirname "$(dirname "${SELF}")")"
+LIB_DIR="${ROOT_DIR}/lib"
+
+# shellcheck source=lib/common.sh
+source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/check.sh"
+source "${LIB_DIR}/install-root.sh"
+source "${LIB_DIR}/install-user.sh"
+source "${LIB_DIR}/uninstall.sh"
+source "${LIB_DIR}/diagnose.sh"
+
+usage() {
+  sed -n '2,25p' "${SELF}" | sed 's/^# \{0,1\}//'
+}
+
+# Full install from a terminal: escalate once for the root phase, then drop
+# back to the user for the session phase. The GUI never takes this path — the
+# panel runs the two phases itself so it can authenticate through pkexec.
+install_all() {
+  local zip="" passthrough_root=() passthrough_user=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --zip) zip="${2:-}"; shift 2 ;;
+      --full-upgrade) passthrough_root+=("$1"); shift ;;
+      --no-aloop) passthrough_root+=("$1"); passthrough_user+=("$1"); shift ;;
+      --no-hypr-rules|--force-hypr-rules) passthrough_user+=("$1"); shift ;;
+      *) err "Unknown option: $1" ;;
+    esac
+  done
+
+  if [[ -z "${zip}" ]]; then
+    zip="$(newest_zip "$(real_home)/Downloads" || true)"
+    [[ -n "${zip}" ]] || err "Put the official DaVinci Resolve Linux ZIP in $(real_home)/Downloads"
+  fi
+
+  # A dry run writes nothing, so do not make the user authenticate for it.
+  local sudo_prefix=()
+  if ! is_root && [[ "${DRY_RUN}" != "1" ]]; then sudo_prefix=(sudo); fi
+  "${sudo_prefix[@]}" env MACHINE="${MACHINE}" DRY_RUN="${DRY_RUN}" \
+    "${SELF}" install --phase root --zip "${zip}" "${passthrough_root[@]}"
+
+  if is_root; then
+    warn "Skipping the user phase: you ran this as root, so it would write to /root."
+    warn "Run 'omarchy-resolve install --phase user' as yourself to finish."
+    return 0
+  fi
+  "${SELF}" install --phase user "${passthrough_user[@]}"
+}
+
+do_install() {
+  local phase="all" args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --phase) phase="${2:-}"; shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  case "${phase}" in
+    root) do_install_root "${args[@]}" ;;
+    user) do_install_user "${args[@]}" ;;
+    all)  install_all "${args[@]}" ;;
+    *) err "--phase must be root, user or all" ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-help}"; shift || true
+
+  # Global flags may appear anywhere; strip them before the subcommand parses.
+  local args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --machine) MACHINE=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --json) shift ;;   # accepted and ignored: these commands are JSON-only
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  export MACHINE DRY_RUN
+
+  case "${cmd}" in
+    check)      do_check ;;
+    install)    do_install "${args[@]}" ;;
+    uninstall)  do_uninstall "${args[@]}" ;;
+    diagnose)   do_diagnose ;;
+    probe)      [[ -n "${args[0]:-}" ]] || err "usage: omarchy-resolve probe <file>"; do_probe "${args[0]}" ;;
+    nvenc-test) do_nvenc_test ;;
+    logs)       do_logs "${args[0]:-200}" ;;
+    launch)
+      [[ -x "${RESOLVE_WRAPPER}" ]] || err "Wrapper missing: ${RESOLVE_WRAPPER}"
+      setsid "${RESOLVE_WRAPPER}" >/dev/null 2>&1 &
+      log "Launched DaVinci Resolve" ;;
+    version)    echo "omarchy-resolve ${ENGINE_VERSION}" ;;
+    help|-h|--help) usage ;;
+    *) usage; err "Unknown command: ${cmd}" ;;
+  esac
+}
+
+main "$@"

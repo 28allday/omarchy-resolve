@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "nosignal.davinci-resolve",
+  "name": "DaVinci Resolve",
+  "version": "0.1.0",
+  "author": "Gavin Nugent",
+  "license": "MIT",
+  "description": "Install, repair and diagnose DaVinci Resolve on Omarchy (Arch + Hyprland + NVIDIA). Authenticates once through Omarchy's polkit agent, then streams the whole install into the panel. Includes the checks that matter when Resolve misbehaves: audio backend, snd-aloop, window rules, NVENC, and the ProRes RAW decoder trap. Summon with: omarchy-shell shell toggle nosignal.davinci-resolve",
+  "kinds": [
+    "service",
+    "panel",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "DaVinci Resolve",
+    "description": "Bar icon that toggles the Resolve panel; lights up while Resolve is running and badges when an install is in progress",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
