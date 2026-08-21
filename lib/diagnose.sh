@@ -126,6 +126,21 @@ diag_audio() {
   fi
 }
 
+# The single most confusing Studio failure: activation cannot be written, and
+# Resolve does not say so. Only meaningful once Resolve is installed.
+diag_license() {
+  local dir="${RESOLVE_PREFIX}/.license"
+  if [[ ! -d "${dir}" ]]; then
+    check_add license "Studio licence folder" warn "${dir} is missing — Studio activation will fail. Reinstall, or: sudo mkdir -p ${dir} && sudo chmod 7777 ${dir}"
+    return
+  fi
+  if [[ -w "${dir}" ]]; then
+    check_add license "Studio licence folder" ok "Writable — Studio can store its activation (not used by the free edition)"
+  else
+    check_add license "Studio licence folder" fail "${dir} is not writable by you, so Studio licensing will fail with no clear error. Fix: sudo chmod 7777 ${dir}"
+  fi
+}
+
 diag_gpu() {
   if command -v nvidia-smi >/dev/null 2>&1; then
     local driver name
@@ -204,6 +219,7 @@ do_diagnose() {
   diag_wrapper
   diag_hypr
   diag_audio
+  diag_license
   diag_gpu
   diag_prores_raw
   diag_logs

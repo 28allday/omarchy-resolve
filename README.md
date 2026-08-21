@@ -22,6 +22,9 @@ wrong later.
 - **Disk**: ~10 GB free wherever the ZIP lives, for temporary extraction.
 - **The Resolve ZIP**: Blackmagic puts a form in front of the download, so you
   have to fetch it yourself. Save it to `~/Downloads/`.
+- **Studio users**: nothing extra to do here — the licence folder permission
+  that trips up a manual install is handled. See
+  [Studio licensing](#studio-licensing) if you installed Resolve some other way.
 
 ## Install
 
@@ -123,11 +126,13 @@ into `/root`, so the engine refuses to do it.
    clears the Qt single-instance lockfiles a crash leaves behind, and unsets the
    Kvantum/GTK Qt theme variables Omarchy sets globally (Resolve's bundled Qt
    has neither plugin).
-7. **Switches the audio backend from DeckLink to ALSA** — Resolve's shipped
+7. **Makes `/opt/resolve/.license` writable** so Resolve Studio can store its
+   activation. See [Studio licensing](#studio-licensing).
+8. **Switches the audio backend from DeckLink to ALSA** — Resolve's shipped
    default aborts on first launch on any machine without a Blackmagic card.
-8. **Sets up `snd-aloop`** and bridges it to your real output. See below.
-9. **Installs Hyprland window rules** — only on an Omarchy old enough to need
-   them; current versions ship these fixes themselves.
+9. **Sets up `snd-aloop`** and bridges it to your real output. See below.
+10. **Installs Hyprland window rules** — only on an Omarchy old enough to need
+    them; current versions ship these fixes themselves.
 
 ### The `snd-aloop` business
 
@@ -170,6 +175,25 @@ export __GLX_VENDOR_LIBRARY_NAME=nvidia
 ```
 
 ## Troubleshooting
+
+### Studio licensing
+
+**If you are running DaVinci Resolve Studio, `/opt/resolve/.license` must be
+writable by the user running Resolve.** The install creates it as root, so on a
+manual install it ends up read-only, Resolve Studio cannot store its
+activation, and licensing fails — with nothing in the interface explaining
+why. It looks like a bad dongle or a rejected key.
+
+This installer sets the permission for you. If you installed Resolve some other
+way, or you are fixing an existing install:
+
+```bash
+sudo chmod 7777 /opt/resolve/.license
+```
+
+The Health tab checks this, and says so plainly if the folder is missing or
+not writable. The free edition never writes here, so the permission is
+harmless either way.
 
 ### A clip imports with picture but no sound
 
@@ -246,6 +270,7 @@ RPATH pass skips files already correct.
 |------|------|
 | `/opt/resolve` | The application |
 | `/opt/resolve/.omarchy-resolve.json` | Which version, from which ZIP, when |
+| `/opt/resolve/.license` | Studio activation — made writable, or Studio licensing fails |
 | `/usr/local/bin/resolve-nvidia-open` | XWayland wrapper (the real launcher) |
 | `/usr/bin/davinci-resolve` | Convenience shim to the wrapper |
 | `/usr/share/applications/*.desktop`, `/usr/share/icons/hicolor/**` | Menu entries and icons |
