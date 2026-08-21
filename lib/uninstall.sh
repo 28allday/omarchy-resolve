@@ -16,7 +16,11 @@ USAGE
 }
 
 do_uninstall_root() {
-  is_root || err "The root phase must run as root (use sudo, or pkexec from a GUI)"
+  # As with install, a dry run writes nothing, so it needs no authentication —
+  # which is how you see what an uninstall would remove before committing to it.
+  if [[ "${DRY_RUN}" != "1" ]]; then
+    is_root || err "The root phase must run as root (use sudo, or pkexec from a GUI)"
+  fi
   emit_phase uninstall-root "Removing DaVinci Resolve"
   emit_progress 0
 
@@ -70,7 +74,9 @@ do_uninstall_root() {
 }
 
 do_uninstall_user() {
-  is_root && err "The user phase must NOT run as root"
+  if is_root; then
+    err "The user phase must NOT run as root — under sudo/pkexec \$HOME is root's and it would clean /root instead of your home"
+  fi
   emit_phase uninstall-user "Cleaning up your session"
   emit_progress 0
 
