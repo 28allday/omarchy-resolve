@@ -412,12 +412,16 @@ Item {
                 }
               }
 
+              // Says something only when the ZIP on disk and the installed
+              // build actually differ. A downgrade is called a downgrade
+              // rather than dressed up as an update.
               Rectangle {
                 width: parent.width
                 height: updateText.implicitHeight + Style.spacing.md * 2
                 radius: root.cornerRadius
                 color: root.selBg
-                visible: root.hasService && root.svc.updateAvailable
+                visible: root.hasService && (root.svc.zipRelation === "newer"
+                                             || root.svc.zipRelation === "older")
 
                 Text {
                   id: updateText
@@ -428,11 +432,32 @@ Item {
                   color: root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
-                  text: root.hasService
-                    ? "A newer ZIP is in your Downloads: " + String(root.svc.info.zipVersion || "")
-                      + " (you have " + root.svc.installedVersion + "). Install it from the Install tab."
-                    : ""
+                  text: {
+                    if (!root.hasService) return ""
+                    var have = root.svc.installedVersion !== ""
+                               ? root.svc.installedVersion
+                               : String(root.svc.info.docsVersion || "what is installed")
+                    var zip = String(root.svc.info.zipVersion || "")
+                    if (root.svc.zipRelation === "newer")
+                      return "Update waiting: " + zip + " is newer than " + have
+                           + ". Install it from the Install tab — your projects are not touched."
+                    if (root.svc.zipRelation === "older")
+                      return "The newest ZIP in your Downloads is " + zip + ", older than the "
+                           + have + " you have. Installing it would be a downgrade."
+                    return ""
+                  }
                 }
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                visible: root.hasService && root.svc.installed && root.svc.zipRelation === "same"
+                text: "Up to date — the ZIP in your Downloads is the build you are running."
               }
 
               Row {

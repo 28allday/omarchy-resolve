@@ -53,6 +53,9 @@ Item {
   readonly property string installedEdition: String(info.installedEdition || "")
   readonly property var zips: info.zips instanceof Array ? info.zips : []
   readonly property bool updateAvailable: info.updateAvailable === true
+  // newer | older | same | unknown — how the ZIP that would be installed
+  // compares to what is installed now.
+  readonly property string zipRelation: String(info.zipRelation || "unknown")
   readonly property bool hasNvidia: String(info.gpu || "") === "nvidia"
 
   // Which ZIP the user picked; defaults to the newest, matching what the

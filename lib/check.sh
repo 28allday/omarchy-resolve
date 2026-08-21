@@ -15,6 +15,30 @@ zip_version() {
   printf '%s' "${base}"
 }
 
+# Compare two Resolve version strings; prints newer | older | same, meaning
+# "$1 is <relation> than $2". Versions look like 20.4.1, 21.0, 21.0b2 — a
+# trailing b<N> marks a beta, which is OLDER than the same base release, and
+# `sort -V` gets that backwards on its own.
+version_relation() {
+  local a="$1" b="$2"
+  [[ "${a}" == "${b}" ]] && { echo same; return; }
+
+  local abase="${a}" apre="" bbase="${b}" bpre=""
+  [[ "${a}" =~ ^(.*[0-9])b([0-9]+)$ ]] && { abase="${BASH_REMATCH[1]}"; apre="${BASH_REMATCH[2]}"; }
+  [[ "${b}" =~ ^(.*[0-9])b([0-9]+)$ ]] && { bbase="${BASH_REMATCH[1]}"; bpre="${BASH_REMATCH[2]}"; }
+
+  if [[ "${abase}" != "${bbase}" ]]; then
+    local first
+    first="$(printf '%s\n%s\n' "${abase}" "${bbase}" | sort -V | head -n1)"
+    [[ "${first}" == "${abase}" ]] && echo older || echo newer
+    return
+  fi
+  # Same base version: a final release beats a beta of it.
+  [[ -z "${apre}" && -n "${bpre}" ]] && { echo newer; return; }
+  [[ -n "${apre}" && -z "${bpre}" ]] && { echo older; return; }
+  (( apre > bpre )) && echo newer || echo older
+}
+
 # Newest ZIP by mtime, matching what the original installer picked.
 newest_zip() {
   local dir="$1" zips=()
@@ -70,10 +94,28 @@ do_check() {
   local docs_ver; docs_ver="$(installed_docs_version)"
   local running=0; pgrep -x resolve >/dev/null 2>&1 && running=1
 
-  # An update is only claimed when both versions are known and differ —
-  # never on a bare "you have a ZIP and an install", which would nag forever.
+  # How the ZIP that would be installed compares to what is installed now.
+  # "unknown" when either version is unavailable — an install predating this
+  # tool has no stamp file, and guessing from the docs' major version only
+  # ("21") would be worse than admitting we do not know.
+  local relation="unknown"
+  if [[ -n "${zip_ver}" && -n "${stamp_ver}" ]]; then
+    relation="$(version_relation "${zip_ver}" "${stamp_ver}")"
+  elif [[ -n "${zip_ver}" && -n "${docs_ver}" ]]; then
+    # No stamp, but Resolve's own docs carry the major version. That is enough
+    # to spot a whole new major release; within one major it stays unknown
+    # rather than guessing.
+    local zip_major="${zip_ver%%.*}" docs_major="${docs_ver%%.*}"
+    if [[ "${zip_major}" =~ ^[0-9]+$ && "${docs_major}" =~ ^[0-9]+$ ]]; then
+      if (( zip_major > docs_major )); then relation="newer"
+      elif (( zip_major < docs_major )); then relation="older"
+      fi
+    fi
+  fi
+  # Only a genuinely newer build is an update. A ZIP that merely differs — a
+  # re-downloaded older build, say — must not be advertised as one.
   local update=0
-  [[ -n "${zip_ver}" && -n "${stamp_ver}" && "${zip_ver}" != "${stamp_ver}" ]] && update=1
+  [[ "${relation}" == "newer" ]] && update=1
 
   local gpu="unknown" driver=""
   if command -v nvidia-smi >/dev/null 2>&1; then
@@ -134,6 +176,7 @@ do_check() {
   printf '%s,' "$(json_bool installed "${installed}")"
   printf '%s,' "$(json_bool running "${running}")"
   printf '%s,' "$(json_bool updateAvailable "${update}")"
+  printf '%s,' "$(json_str zipRelation "${relation}")"
   printf '%s,' "$(json_str installedVersion "${stamp_ver}")"
   printf '%s,' "$(json_str installedEdition "${stamp_edition}")"
   printf '%s,' "$(json_str installedZip "${stamp_zip}")"

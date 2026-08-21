@@ -260,6 +260,54 @@ RPATH pass skips files already correct.
 Your projects and settings live in `~/.local/share/DaVinciResolve` and are never
 touched by an install, a reinstall, or an uninstall.
 
+## Updating Resolve
+
+Blackmagic put a form in front of their downloads, so nothing can fetch a new
+release for you. Once the ZIP is in `~/Downloads/`, though, the rest is handled:
+
+1. Download the new version to `~/Downloads/`.
+2. Open the panel. The Status tab compares the ZIP against what you are running
+   and says **"Update waiting: 21.0 is newer than 21.0b2"**.
+3. Press **Reinstall** (or pick a specific ZIP first on the Install tab).
+
+Or from the terminal — the newest ZIP is picked automatically:
+
+```bash
+bin/omarchy-resolve install
+```
+
+An update is a full reinstall: `/opt/resolve` is replaced wholesale, which is
+how Blackmagic ship it anyway. What survives untouched:
+
+- `~/.local/share/DaVinciResolve` — your Project Library, settings, layouts,
+  keyboard mappings and the LUTs you have imported into your user folder.
+- Your Hyprland rules, PipeWire bridge and desktop entries, which are rewritten
+  identically rather than lost.
+
+What does not survive, because it lives inside `/opt/resolve`: anything you
+dropped into the install tree yourself — OFX plugins installed to
+`/opt/resolve/OFX`, custom LUTs placed under `/opt/resolve/LUT`, Fusion
+templates. Copy those out first if you have any.
+
+### How "newer" is decided
+
+Every install through this tool records what it installed in
+`/opt/resolve/.omarchy-resolve.json`, and the ZIP filename carries the version,
+so the two are compared directly. Beta ordering is handled: `21.0b2` is newer
+than `21.0b1`, and `21.0` is newer than either.
+
+Two honest limits:
+
+- **An install that predates this tool has no record**, so there is nothing
+  exact to compare against. Resolve's own docs give only the major version
+  ("21"), which is enough to spot a whole new major release but not a point
+  release — so within a major it says nothing rather than guessing. The first
+  install through the panel fixes this permanently.
+- **The ZIP offered is the newest by modification time**, matching what the
+  installer has always picked. If that turns out to be an older build than the
+  one you are running, it says so and calls it a downgrade instead of an
+  update. The Install tab lists every ZIP you have, so you can pick another.
+
 ## Uninstalling
 
 Press **Uninstall** on the panel's Install tab, or:
