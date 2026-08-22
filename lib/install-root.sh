@@ -191,17 +191,20 @@ root_install_tree() {
     else
       cp -a "${APPDIR}/." "${RESOLVE_PREFIX}/" || step_fail "Copy to ${RESOLVE_PREFIX} failed"
     fi
-    mkdir -p "${RESOLVE_PREFIX}/.license"
-    # DaVinci Resolve Studio writes its activation into this directory as the
-    # user running Resolve — but the install creates it as root, so left alone
-    # it is not writable and licensing fails with nothing useful said about
-    # why. This is the fix that circulates as `sudo chmod 7777
-    # /opt/resolve/.license`: what matters is the write bit for the user, the
-    # sticky bit stops one user removing another's licence, and setuid is
-    # simply ignored on directories. Harmless on the free edition, which never
-    # writes here.
-    chmod 7777 "${RESOLVE_PREFIX}/.license"
   fi
+  # DaVinci Resolve Studio writes its activation into this directory as the
+  # user running Resolve — but the install creates it as root, so left alone it
+  # is not writable and licensing fails with nothing useful said about why.
+  # This is the fix that circulates as `sudo chmod 7777 /opt/resolve/.license`:
+  # what matters is the write bit for the user, the sticky bit stops one user
+  # removing another's licence, and setuid is simply ignored on directories.
+  # Harmless on the free edition, which never writes here.
+  #
+  # Announced through run() rather than hidden inside the copy above, so a dry
+  # run shows it: this is the single most important thing the step does, and a
+  # preview that omits it is a preview of the wrong install.
+  run mkdir -p "${RESOLVE_PREFIX}/.license"
+  run chmod 7777 "${RESOLVE_PREFIX}/.license"
   step_ok
   emit_progress 60
 }
