@@ -65,8 +65,9 @@ stamp_field() {
 
 missing_packages() {
   local missing=() pkg
+  # Keep in step with root_install_packages() in lib/install-root.sh.
   for pkg in unzip patchelf libarchive xdg-user-dirs desktop-file-utils file \
-             gtk-update-icon-cache libxcrypt-compat ffmpeg4.4 glu fuse2 rsync; do
+             gtk-update-icon-cache libxcrypt-compat ffmpeg glu fuse2 rsync; do
     pacman -Qq "${pkg}" >/dev/null 2>&1 || missing+=("${pkg}")
   done
   printf '%s\n' "${missing[@]:-}"

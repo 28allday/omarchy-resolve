@@ -35,8 +35,15 @@ root_install_packages() {
     run pacman -Sy --noconfirm >/dev/null 2>&1 || step_warn "Package database sync failed"
   fi
 
+  # `ffmpeg` is ours, not Resolve's: diagnose uses it for the NVENC encoder and
+  # render tests, and the codec probe reads streams with it. Resolve itself
+  # needs no system ffmpeg — it bundles its own (libavcodec.so.60,
+  # libavformat.so.60, libavutil.so.58, libswscale.so.7 in /opt/resolve/libs)
+  # and the RPATH patch below points it at them. The `ffmpeg4.4` that used to
+  # sit here was inherited folklore: it supplies the .58/.56 sonames, which
+  # nothing under /opt/resolve references, linked or dlopened.
   local packages=(unzip patchelf libarchive xdg-user-dirs desktop-file-utils file
-                  gtk-update-icon-cache rsync libxcrypt-compat ffmpeg4.4 glu fuse2)
+                  gtk-update-icon-cache rsync libxcrypt-compat ffmpeg glu fuse2)
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "   would install (one at a time): ${packages[*]}"
     step_skip "dry run"
