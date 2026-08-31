@@ -311,16 +311,20 @@ Item {
     onExited: function(exitCode) {
       root.checking = false
       root.checked = true
+      // A failed job's message must outlive the refresh that follows it;
+      // only preflight errors may be set or cleared here.
+      var keepJobError = root.jobResult === "failed"
       if (exitCode !== 0) {
-        root.lastError = String(checkErr.text || "Preflight failed").trim()
+        if (!keepJobError)
+          root.lastError = String(checkErr.text || "Preflight failed").trim()
         return
       }
       try {
         root.info = JSON.parse(String(checkOut.text || "{}"))
         if (root.selectedZip === "") root.selectedZip = String(root.info.selectedZip || "")
-        root.lastError = ""
+        if (!keepJobError) root.lastError = ""
       } catch (e) {
-        root.lastError = "Could not parse preflight output"
+        if (!keepJobError) root.lastError = "Could not parse preflight output"
       }
     }
   }
