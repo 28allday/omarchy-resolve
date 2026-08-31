@@ -66,6 +66,7 @@ Item {
   property bool optFullUpgrade: false
   property bool optAloop: true
   property bool optHyprRules: true
+  property bool optAacFix: true
   // A rehearsal: same pkexec call, same streaming, same parsing — the engine
   // just prints what it would do instead of doing it. Worth having in the UI
   // and not only behind a flag, because it is the only way to confirm the
@@ -206,6 +207,7 @@ Item {
     if (optDryRun) _pendingUserArgs.push("--dry-run")
     if (!optAloop) _pendingUserArgs.push("--no-aloop")
     if (!optHyprRules) _pendingUserArgs.push("--no-hypr-rules")
+    if (!optAacFix) _pendingUserArgs.push("--no-aac-fix")
 
     jobProc.command = args
     jobProc.running = true

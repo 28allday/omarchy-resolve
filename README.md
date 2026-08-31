@@ -55,7 +55,7 @@ Then launch Resolve from your app menu, from the panel, or with
 |-----|----------------|
 | **Status** | What is installed, which GPU and driver, which ZIP is waiting, whether a newer one has appeared. Launch Resolve from here. |
 | **Install** | Pick the ZIP, set the options, install or uninstall. Live progress and a step list while it runs. |
-| **Health** | The checks that explain Resolve misbehaving — audio backend, snd-aloop, window rules, opacity, NVENC, log errors, disk space — plus an NVENC test and a codec probe. |
+| **Health** | The checks that explain Resolve misbehaving — audio backend, snd-aloop, window rules, opacity, NVENC, AAC Fix, log errors, disk space — plus an NVENC test and a codec probe. |
 | **Log** | The install log as it happens, or the tail of Resolve's own `ResolveDebug.txt`. |
 
 Things worth knowing:
@@ -133,6 +133,10 @@ into `/root`, so the engine refuses to do it.
 9. **Sets up `snd-aloop`** and bridges it to your real output. See below.
 10. **Installs Hyprland window rules** — only on an Omarchy old enough to need
     them; current versions ship these fixes themselves.
+11. **Installs AAC Fix** — Resolve on Linux cannot decode AAC, so the install
+    ends by putting the [AAC Fix](#a-clip-imports-with-picture-but-no-sound)
+    script in Resolve's Scripts menu and a `resolve-aac-fix` command in
+    `~/.local/bin`. Runs last, once Resolve's user folder exists.
 
 ### The `snd-aloop` business
 
@@ -162,6 +166,7 @@ audio interface Resolve is happy with.
 | Full system upgrade first | Full system upgrade first | `--full-upgrade` |
 | Skip the snd-aloop audio fix | Set up snd-aloop (off) | `--no-aloop` |
 | Leave Hyprland alone | Manage Hyprland window rules (off) | `--no-hypr-rules` |
+| Do not install AAC Fix | Install AAC Fix (off) | `--no-aac-fix` |
 | Write the local window rules anyway | — | `--force-hypr-rules` |
 | Change nothing, just report | Dry run | `--dry-run` |
 
@@ -197,13 +202,32 @@ harmless either way.
 
 ### A clip imports with picture but no sound
 
-**The Linux build of Resolve has no AAC decoder.** An ordinary camera or phone
-`.mp4`/`.mov` carries AAC, so it lands on the timeline silent with nothing in
-the UI to explain it. Remux the audio to PCM — fast, and the picture is not
-re-encoded:
+**The Linux build of Resolve has no AAC decoder** — free and Studio alike. An
+ordinary camera or phone `.mp4`/`.mov` carries AAC, so it lands on the timeline
+silent with nothing in the UI to explain it. The fix is to rewrap the file:
+the picture is copied untouched, only the audio is decoded once to PCM.
+
+The install puts **AAC Fix** in place to do exactly that. Inside Resolve, open
+a project and go to *Workspace › Scripts › Utility › AAC Fix*: **Scan Media
+Pool** lists every AAC clip, **Fix Selected** / **Fix All** convert them and
+relink the clips in place so timelines keep working, and **Import for
+Resolve…** converts a file or folder on the way in. Resolve only reads its
+Scripts folder at startup, so restart it after the install.
+
+From the terminal:
 
 ```bash
-ffmpeg -i input.mp4 -c:v copy -c:a pcm_s16le output.mov
+resolve-aac-fix scan ~/Footage          # list the AAC files (recursive)
+resolve-aac-fix fix clip.mp4            # -> clip_pcm.mov, ready to import
+resolve-aac-fix probe clip.mp4          # what is in this file?
+```
+
+Converted files are written as `<name>_pcm.mov` next to the source (or `--out
+DIR`), grow by roughly 8 MB per minute of stereo, and the original is never
+touched. It is the same as running this by hand:
+
+```bash
+ffmpeg -i input.mp4 -c:v copy -c:a pcm_s24le output.mov
 ```
 
 Two neighbouring facts, since they get confused:
@@ -281,6 +305,8 @@ RPATH pass skips files already correct.
 | `~/.config/pipewire/pipewire.conf.d/50-resolve-aloop-bridge.conf` | Monitor audio bridge |
 | `~/.config/wireplumber/wireplumber.conf.d/51-resolve-aloop-no-default.conf` | Keeps the loopback out of the default-sink rotation |
 | `~/.config/hypr/davinci-resolve.lua` | Window rules, only on an Omarchy that needs them |
+| `~/.local/share/DaVinciResolve/Fusion/Scripts/Utility/AAC Fix.py` | AAC Fix, in Resolve's Scripts menu |
+| `~/.local/bin/resolve-aac-fix` | The same script as a command (symlink to the above) |
 
 Your projects and settings live in `~/.local/share/DaVinciResolve` and are never
 touched by an install, a reinstall, or an uninstall.

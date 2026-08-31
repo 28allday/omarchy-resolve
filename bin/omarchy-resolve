@@ -48,7 +48,7 @@ install_all() {
       --zip) zip="${2:-}"; shift 2 ;;
       --full-upgrade) passthrough_root+=("$1"); shift ;;
       --no-aloop) passthrough_root+=("$1"); passthrough_user+=("$1"); shift ;;
-      --no-hypr-rules|--force-hypr-rules) passthrough_user+=("$1"); shift ;;
+      --no-hypr-rules|--force-hypr-rules|--no-aac-fix) passthrough_user+=("$1"); shift ;;
       *) err "Unknown option: $1" ;;
     esac
   done

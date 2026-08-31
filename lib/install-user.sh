@@ -9,6 +9,7 @@
 SETUP_ALOOP_USER=1
 SETUP_HYPR_RULES=1
 FORCE_HYPR_RULES=0
+SETUP_AAC_FIX=1
 
 install_user_usage() {
   cat >&2 <<'USAGE'
@@ -16,6 +17,7 @@ usage: omarchy-resolve install --phase user [options]
   --no-aloop            skip the PipeWire/Wireplumber loopback bridge
   --no-hypr-rules       do not touch the Hyprland config
   --force-hypr-rules    install the local rules even when Omarchy ships them
+  --no-aac-fix          do not install the AAC Fix script and CLI
 USAGE
 }
 
@@ -268,12 +270,57 @@ CONF
   step_ok
 }
 
+# Resolve on Linux — free and Studio — has no AAC decoder, so phone and camera
+# clips import silent. AAC Fix (lib/resolve_aac_fix.py) rewraps them to PCM
+# from inside Resolve (Workspace › Scripts › Utility › AAC Fix) or from the
+# terminal (resolve-aac-fix). One copy goes into Resolve's user Scripts folder
+# and the CLI is a symlink to that copy, so it survives this plugin being
+# removed or updated. Last in the user phase: it needs the DaVinciResolve tree
+# and everything else is more important if the run stops early.
+user_aac_fix() {
+  step aacfix "Installing AAC Fix (Resolve script + CLI)…"
+  if [[ "${SETUP_AAC_FIX}" != "1" ]]; then
+    step_skip "Skipped (--no-aac-fix)"; return 0
+  fi
+  local src="${LIB_DIR}/resolve_aac_fix.py"
+  if [[ ! -f "${src}" ]]; then
+    step_warn "Bundled script missing at ${src} — nothing installed"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    step_warn "python3 not found — AAC Fix needs it (sudo pacman -S python), skipped"
+    return 0
+  fi
+  local dir="${HOME}/.local/share/DaVinciResolve/Fusion/Scripts/Utility"
+  local dest="${dir}/AAC Fix.py"
+  local bindir="${HOME}/.local/bin"
+  local link="${bindir}/resolve-aac-fix"
+  local verb="Installed"
+  [[ -f "${dest}" ]] && verb="Updated"
+
+  run mkdir -p "${dir}" "${bindir}"
+  run install -m 755 "${src}" "${dest}"
+  run ln -sfn "${dest}" "${link}"
+  [[ "${DRY_RUN}" == "1" ]] && { step_skip "dry run"; return 0; }
+
+  if ! command -v ffprobe >/dev/null 2>&1; then
+    step_warn "${verb}, but ffprobe is missing — install ffmpeg before using AAC Fix"
+    return 0
+  fi
+  case ":${PATH}:" in
+    *":${bindir}:"*) ;;
+    *) log "  ${bindir} is not on your PATH — the resolve-aac-fix command needs it" ;;
+  esac
+  step_ok "${verb} — in Resolve: Workspace › Scripts › Utility › AAC Fix (restart Resolve first)"
+}
+
 do_install_user() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --no-aloop) SETUP_ALOOP_USER=0; shift ;;
       --no-hypr-rules) SETUP_HYPR_RULES=0; shift ;;
       --force-hypr-rules) FORCE_HYPR_RULES=1; shift ;;
+      --no-aac-fix) SETUP_AAC_FIX=0; shift ;;
       -h|--help) install_user_usage; exit 0 ;;
       *) install_user_usage; err "Unknown option: $1" ;;
     esac
@@ -296,6 +343,8 @@ do_install_user() {
   user_fix_audio_config
   emit_progress 75
   user_aloop_bridge
+  emit_progress 90
+  user_aac_fix
   emit_progress 100
   log "User phase complete"
   emit_done 0

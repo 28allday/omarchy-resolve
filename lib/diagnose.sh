@@ -178,6 +178,26 @@ diag_prores_raw() {
   fi
 }
 
+# Resolve on Linux cannot decode AAC at all, in either edition. The install
+# puts the AAC Fix script where Resolve lists it; without it phone and camera
+# clips import silent with nothing in the UI to say why.
+diag_aacfix() {
+  local user="${HOME}/.local/share/DaVinciResolve/Fusion/Scripts/Utility/AAC Fix.py"
+  local system="${RESOLVE_PREFIX}/Fusion/Scripts/Utility/AAC Fix.py"
+  local link="${HOME}/.local/bin/resolve-aac-fix"
+  local where=""
+  if [[ -f "${user}" ]]; then where="${user}"; elif [[ -f "${system}" ]]; then where="${system}"; fi
+  if [[ -z "${where}" ]]; then
+    check_add aacfix "AAC Fix" warn "Not installed — AAC clips (most phone/camera MP4s) import silent. Re-run the install's user phase."
+  elif ! command -v ffprobe >/dev/null 2>&1; then
+    check_add aacfix "AAC Fix" warn "Script installed but ffprobe is missing — install ffmpeg"
+  elif [[ -x "${link}" ]]; then
+    check_add aacfix "AAC Fix" ok "Workspace › Scripts › Utility › AAC Fix, and resolve-aac-fix on the command line"
+  else
+    check_add aacfix "AAC Fix" ok "Workspace › Scripts › Utility › AAC Fix (no resolve-aac-fix command on PATH)"
+  fi
+}
+
 # Resolve logs a handful of ERROR lines on every clean startup. Counting those
 # as problems trains you to ignore the count, so they are filtered out and only
 # the remainder is reported.
@@ -221,6 +241,7 @@ do_diagnose() {
   diag_audio
   diag_license
   diag_gpu
+  diag_aacfix
   diag_prores_raw
   diag_logs
   diag_disk

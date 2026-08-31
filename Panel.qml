@@ -707,6 +707,17 @@ Item {
 
                 Toggle {
                   width: parent.width
+                  label: "Install AAC Fix"
+                  description: "Resolve on Linux cannot decode AAC, so phone and camera clips import silent. Adds Workspace › Scripts › Utility › AAC Fix and a resolve-aac-fix command to rewrap them."
+                  checked: root.hasService ? root.svc.optAacFix : true
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.svc.optAacFix = !root.svc.optAacFix
+                }
+
+                Toggle {
+                  width: parent.width
                   label: "Dry run"
                   description: "Rehearse the whole thing: same password prompt, same progress, nothing written."
                   checked: root.hasService ? root.svc.optDryRun : false

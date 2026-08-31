@@ -110,5 +110,5 @@ json_bool() { local v=false; [[ "$2" == "1" || "$2" == "true" ]] && v=true; prin
   RESOLVE_SHIM="/usr/bin/davinci-resolve"
   RESOLVE_STAMP="/opt/resolve/.omarchy-resolve.json"
   ALOOP_CONF="/etc/modules-load.d/snd-aloop.conf"
-  ENGINE_VERSION="0.1.0"
+  ENGINE_VERSION="0.2.0"
 }

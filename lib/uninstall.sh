@@ -107,7 +107,19 @@ do_uninstall_user() {
     run systemctl --user restart wireplumber pipewire pipewire-pulse 2>/dev/null || true
   fi
   step_ok
-  emit_progress 70
+  emit_progress 65
+
+  step aacfix "Removing AAC Fix…"
+  local aac="${HOME}/.local/share/DaVinciResolve/Fusion/Scripts/Utility/AAC Fix.py"
+  local aac_link="${HOME}/.local/bin/resolve-aac-fix"
+  run rm -f "${aac}"
+  # Only take the CLI link if it is ours — one pointing at a git checkout of
+  # resolve-aac-fix belongs to whoever installed that by hand.
+  if [[ -L "${aac_link}" && "$(readlink "${aac_link}")" == "${aac}" ]]; then
+    run rm -f "${aac_link}"
+  fi
+  step_ok
+  emit_progress 75
 
   step userdata "Checking user data…"
   local data="${HOME}/.local/share/DaVinciResolve"
