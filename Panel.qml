@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -316,10 +317,15 @@ Item {
           // ============================================================ STATUS
           Flickable {
             anchors.fill: parent
+            id: statusFlick
             visible: root.tab === 0
             contentHeight: statusColumn.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {
+              policy: statusFlick.contentHeight > statusFlick.height
+                      ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            }
             onVisibleChanged: if (visible) contentY = 0
 
             Column {
@@ -492,10 +498,15 @@ Item {
           // =========================================================== INSTALL
           Flickable {
             anchors.fill: parent
+            id: installFlick
             visible: root.tab === 1
             contentHeight: installColumn.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {
+              policy: installFlick.contentHeight > installFlick.height
+                      ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            }
             onVisibleChanged: if (visible) contentY = 0
 
             Column {
@@ -801,6 +812,10 @@ Item {
             contentHeight: healthColumn.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {
+              policy: healthFlick.contentHeight > healthFlick.height
+                      ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            }
             onVisibleChanged: if (visible) contentY = 0
 
             Column {
@@ -968,6 +983,10 @@ Item {
                 contentHeight: logText.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {
+                  policy: logFlick.contentHeight > logFlick.height
+                          ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                }
 
                 // Follow the tail while a job is running, but stop fighting the
                 // user the moment they scroll back to read something.
