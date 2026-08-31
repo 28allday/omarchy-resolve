@@ -11,6 +11,8 @@ working around an ALSA quirk that otherwise makes renders hang with no error.
 This does all of that, then keeps the checks around for when something goes
 wrong later.
 
+![The Health tab: the checks that explain Resolve misbehaving](preview.png)
+
 ## Requirements
 
 - **OS**: Omarchy 4 (Arch Linux). The panel needs omarchy-shell; the engine
