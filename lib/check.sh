@@ -63,14 +63,97 @@ stamp_field() {
     head -n1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' || true
 }
 
+# Packages the install needs regardless of what card is in the machine. Keep
+# in step with root_install_packages() in lib/install-root.sh.
+BASE_PACKAGES=(unzip patchelf libarchive xdg-user-dirs desktop-file-utils file
+               gtk-update-icon-cache libxcrypt-compat ffmpeg glu fuse2 rsync)
+
+# The compute stack for one vendor. Resolve does all its work on the GPU, so
+# on AMD and Intel these are not optional extras — without them Resolve sees no
+# OpenCL device and dies on first launch with "Unsupported GPU Processing
+# Mode". NVIDIA needs nothing here: CUDA comes with the driver, which Omarchy
+# installs itself, and this installer has no business second-guessing it.
+# Keep in step with root_install_gpu_stack() in lib/install-root.sh.
+gpu_stack_packages() {
+  case "$1" in
+    amd)   printf '%s\n' ocl-icd clinfo rocminfo rocm-smi-lib ;;
+    intel) printf '%s\n' ocl-icd clinfo intel-compute-runtime level-zero-loader \
+                          vulkan-intel intel-media-driver ;;
+    *)     : ;;
+  esac
+}
+
 missing_packages() {
   local missing=() pkg
-  # Keep in step with root_install_packages() in lib/install-root.sh.
-  for pkg in unzip patchelf libarchive xdg-user-dirs desktop-file-utils file \
-             gtk-update-icon-cache libxcrypt-compat ffmpeg glu fuse2 rsync; do
+  for pkg in "${BASE_PACKAGES[@]}" $(gpu_stack_packages "${1:-}"); do
     pacman -Qq "${pkg}" >/dev/null 2>&1 || missing+=("${pkg}")
   done
   printf '%s\n' "${missing[@]:-}"
+}
+
+# Is the pinned ROCm stack installed at the versions that work with Resolve?
+# Echoes ok | drift | absent, and on drift or absent says what it found.
+rocm_pin_state() {
+  local pkg ver missing=() wrong=()
+  for pkg in "${ROCM_PIN_PACKAGES[@]}"; do
+    ver="$(pacman -Q "${pkg}" 2>/dev/null | awk '{print $2}')"
+    if [[ -z "${ver}" ]]; then missing+=("${pkg}")
+    elif [[ "${ver}" != *"${ROCM_PIN_VERSION}"* ]]; then wrong+=("${pkg} ${ver}")
+    fi
+  done
+  if [[ ${#missing[@]} -eq ${#ROCM_PIN_PACKAGES[@]} ]]; then echo "absent|not installed"; return; fi
+  if [[ ${#missing[@]} -gt 0 ]]; then echo "drift|missing ${missing[*]}"; return; fi
+  if [[ ${#wrong[@]} -gt 0 ]]; then echo "drift|${wrong[*]} (expected ${ROCM_PIN_VERSION})"; return; fi
+  echo "ok|${ROCM_PIN_VERSION}"
+}
+
+rocm_pin_in_pacman_conf() {
+  grep -qE '^IgnorePkg.*rocm-core' "${PACMAN_CONF}" 2>/dev/null
+}
+
+# Can Resolve actually compute on this machine? Echoes "state|detail", where
+# state is ok | warn | fail. Read-only and unprivileged — the panel calls it on
+# every open.
+compute_stack_state() {
+  local vendor="$1" gfx="$2"
+  local platforms=""
+  command -v clinfo >/dev/null 2>&1 && platforms="$(clinfo -l 2>/dev/null || true)"
+
+  case "${vendor}" in
+    nvidia)
+      if command -v nvidia-smi >/dev/null 2>&1 &&
+         nvidia-smi --query-gpu=driver_version --format=csv,noheader >/dev/null 2>&1; then
+        echo "ok|CUDA via the NVIDIA driver"
+      else
+        echo "fail|NVIDIA card present but the driver is not installed — Resolve has nothing to compute on"
+      fi ;;
+    amd)
+      local pin; pin="$(rocm_pin_state)"
+      local pin_state="${pin%%|*}" pin_detail="${pin#*|}"
+      if [[ "${pin_state}" == "absent" ]]; then
+        echo "fail|No ROCm OpenCL runtime — Resolve will fail with Unsupported GPU Processing Mode"
+      elif [[ "${pin_state}" == "drift" ]]; then
+        echo "warn|ROCm present but not the pinned ${ROCM_PIN_VERSION} stack: ${pin_detail}"
+      elif [[ -n "${platforms}" ]] && ! printf '%s' "${platforms}" | grep -qiE 'AMD|gfx|Radeon'; then
+        echo "warn|ROCm ${ROCM_PIN_VERSION} installed but clinfo sees no AMD platform"
+      elif [[ -n "${gfx}" ]] && [[ -z "$(resolve_hsa_override "${gfx}")" ]]; then
+        echo "warn|ROCm ${ROCM_PIN_VERSION} installed, but ${gfx} has no supported HSA target — this card is too old for ROCm 7"
+      else
+        echo "ok|ROCm ${ROCM_PIN_VERSION}${gfx:+ on ${gfx}}"
+      fi ;;
+    intel)
+      if ! pacman -Qq intel-compute-runtime >/dev/null 2>&1; then
+        echo "fail|No Intel compute runtime — Resolve will fail with Unsupported GPU Processing Mode"
+      elif [[ -n "${platforms}" ]] && ! printf '%s' "${platforms}" | grep -qi 'Intel'; then
+        echo "warn|intel-compute-runtime installed but clinfo sees no Intel platform"
+      else
+        echo "ok|Intel NEO OpenCL (Blackmagic does not officially support Intel — treat as experimental)"
+      fi ;;
+    none)
+      echo "fail|No display adapter detected" ;;
+    *)
+      echo "fail|Unrecognised GPU vendor — Resolve needs an NVIDIA, AMD or Intel card" ;;
+  esac
 }
 
 do_check() {
@@ -118,30 +201,50 @@ do_check() {
   local update=0
   [[ "${relation}" == "newer" ]] && update=1
 
-  # `gpu` stays a single vendor because the panel gates on it
-  # (Service.qml: hasNvidia). `gpus` carries the whole picture, which on a
-  # hybrid machine is more than one card — the old code stopped at the first
-  # match and never mentioned the second.
-  local gpu="unknown" driver="" gpus_json="[]"
+  # `gpus` carries the whole picture — on a hybrid machine that is more than
+  # one card, each with the two facts that decide everything downstream: its
+  # PCI address, and whether it is discrete. `gpu` remains the single vendor
+  # Resolve will compute on, which is now a considered pick rather than "the
+  # first card of the most-preferred vendor".
+  local driver=""
   if command -v nvidia-smi >/dev/null 2>&1; then
     driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || true)"
   fi
-  local vendor name first=1
-  while IFS='|' read -r vendor name; do
-    [[ -n "${vendor}" ]] || continue
-    if [[ ${first} -eq 1 ]]; then gpus_json="["; first=0; else gpus_json+=","; fi
-    gpus_json+="{$(json_str vendor "${vendor}"),$(json_str name "${name}")}"
-  done < <(detect_gpus)
-  [[ ${first} -eq 1 ]] || gpus_json+="]"
-  # Preference order matches what Resolve can actually use.
-  if has_gpu_vendor nvidia;  then gpu="nvidia"
-  elif has_gpu_vendor amd;   then gpu="amd"
-  elif has_gpu_vendor intel; then gpu="intel"
-  fi
-  # nvidia-smi answering is proof enough on its own, even if lspci is absent.
-  [[ -n "${driver}" ]] && gpu="nvidia"
 
-  local missing; missing="$(missing_packages | grep -v '^$' || true)"
+  resolve_compute_target || true
+  local gpu="${COMPUTE_VENDOR:-none}" compute_bdf="${COMPUTE_BDF}" compute_gfx="${COMPUTE_GFX}"
+  local compute_name=""
+  [[ -n "${compute_bdf}" ]] && compute_name="$(gpu_name_at "${compute_bdf}" || true)"
+
+  local gpus_json="[]" vendor bdf gdriver name kind first=1
+  while IFS='|' read -r vendor bdf gdriver name; do
+    [[ -n "${vendor}" ]] || continue
+    kind="$(resolve_gpu_is_discrete "${vendor}" "${bdf}" "${name}")"
+    if [[ ${first} -eq 1 ]]; then gpus_json="["; first=0; else gpus_json+=","; fi
+    gpus_json+="{$(json_str vendor "${vendor}"),$(json_str name "${name}")"
+    gpus_json+=",$(json_str bdf "${bdf}"),$(json_str driver "${gdriver}")"
+    gpus_json+=",$(json_str type "${kind}")"
+    gpus_json+=",$(json_str gfx "$([[ ${vendor} == amd ]] && resolve_amd_gfx_target "${bdf}" 2>/dev/null || true)")"
+    gpus_json+=",$(json_bool selected "$([[ ${bdf} == "${compute_bdf}" ]] && echo 1 || echo 0)")}"
+  done < <(resolve_gpu_entries || true)
+  [[ ${first} -eq 1 ]] || gpus_json+="]"
+
+  # What Resolve will compute with, and whether that stack is actually ready.
+  # This is the check that decides whether an install can succeed at all: on
+  # AMD and Intel a missing runtime means Resolve dies on first launch with
+  # "Unsupported GPU Processing Mode" and no other explanation.
+  local api=""
+  case "${gpu}" in
+    nvidia) api="CUDA" ;;
+    amd)    api="OpenCL (ROCm)" ;;
+    intel)  api="OpenCL (Intel NEO)" ;;
+  esac
+  local stack; stack="$(compute_stack_state "${gpu}" "${compute_gfx}")"
+  local stack_state="${stack%%|*}" stack_detail="${stack#*|}"
+  local hsa=""; [[ "${gpu}" == "amd" && -n "${compute_gfx}" ]] && hsa="$(resolve_hsa_override "${compute_gfx}")"
+  local rocm_pinned=0; rocm_pin_in_pacman_conf && rocm_pinned=1
+
+  local missing; missing="$(missing_packages "${gpu}" | grep -v '^$' || true)"
   local missing_json="[]" first=1
   if [[ -n "${missing}" ]]; then
     missing_json="["
@@ -196,6 +299,14 @@ do_check() {
   printf '%s,' "$(json_str gpu "${gpu}")"
   printf '%s,' "$(json_str driverVersion "${driver}")"
   printf '%s,' "$(json_raw gpus "${gpus_json}")"
+  printf '%s,' "$(json_str computeBdf "${compute_bdf}")"
+  printf '%s,' "$(json_str computeName "${compute_name}")"
+  printf '%s,' "$(json_str computeGfx "${compute_gfx}")"
+  printf '%s,' "$(json_str computeApi "${api}")"
+  printf '%s,' "$(json_str stackState "${stack_state}")"
+  printf '%s,' "$(json_str stackDetail "${stack_detail}")"
+  printf '%s,' "$(json_str hsaOverride "${hsa}")"
+  printf '%s,' "$(json_bool rocmPinned "${rocm_pinned}")"
   printf '%s,' "$(json_bool wrapper "$([[ -x ${RESOLVE_WRAPPER} ]] && echo 1 || echo 0)")"
   printf '%s'  "$(json_raw missingPackages "${missing_json}")"
   printf '}\n'
