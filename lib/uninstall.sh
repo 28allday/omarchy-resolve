@@ -25,6 +25,9 @@ do_uninstall_root() {
   emit_progress 0
 
   step tree "Removing ${RESOLVE_PREFIX}…"
+  # A reinstall keeps .license; an uninstall does not. Say so, because a
+  # Studio key deactivated from inside Resolve first can be used elsewhere.
+  [[ -d "${RESOLVE_PREFIX}/.license" ]] && log "  This removes the Studio activation in ${RESOLVE_PREFIX}/.license too"
   run rm -rf "${RESOLVE_PREFIX}"
   step_ok
   emit_progress 40

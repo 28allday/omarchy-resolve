@@ -184,12 +184,19 @@ audio interface Resolve is happy with.
 
 | Option | Panel toggle | Engine flag |
 |--------|--------------|-------------|
-| Full system upgrade first | — | `--full-upgrade` |
+| Full system upgrade first | — | `--full-upgrade` (refused on Omarchy, whose pacman hook blocks direct `-Syu` — run `omarchy update` first) |
 | Skip the snd-aloop audio fix | Set up snd-aloop (off) | `--no-aloop` |
 | Leave Hyprland alone | Manage Hyprland window rules (off) | `--no-hypr-rules` |
 | Do not install AAC Fix | Install AAC Fix (off) | `--no-aac-fix` |
 | Write the local window rules anyway | — | `--force-hypr-rules` |
 | Change nothing, just report | Dry run | `--dry-run` |
+
+**Cancel** on the Install tab stops a run. During the system phase that means
+a second password prompt: the phase runs as root, and only root can stop it.
+The engine finishes the command in flight, puts back anything it had set
+aside (the Studio activation, for one) and exits; the install is then
+incomplete, and running it again finishes it. A dismissed prompt leaves the
+install running.
 
 ## Your GPU
 
@@ -278,8 +285,10 @@ card makes things worse.
 Do not edit `/usr/local/bin/resolve-omarchy` directly. Every install and
 update writes that file from scratch, so changes made in it are reverted the
 next time you update Resolve — silently, and the machine quietly goes back to
-the wrong GPU. Put them in an override file instead. The wrapper sources these
-immediately before launching, and no install touches either:
+the wrong GPU. Put them in an override file instead. No install touches either, and the
+wrapper reads them twice: before choosing a GPU, so `RESOLVE_GPU_BDF` and
+`RESOLVE_NO_PIN` in them steer the choice, and again immediately before
+launching, so anything they export outright wins over what the choice set:
 
 ```bash
 mkdir -p ~/.config/omarchy-resolve
@@ -474,6 +483,9 @@ how Blackmagic ship it anyway. What survives untouched:
 
 - `~/.local/share/DaVinciResolve` — your Project Library, settings, layouts,
   keyboard mappings and the LUTs you have imported into your user folder.
+- `/opt/resolve/.license` — the Studio activation. It is set aside before the
+  old tree is removed and put back over the new one, so an update does not
+  end in the licence dialog.
 - Your Hyprland rules, PipeWire bridge and desktop entries, which are rewritten
   identically rather than lost.
 
@@ -512,6 +524,10 @@ bin/omarchy-resolve uninstall --phase user
 
 Add `--purge-data` to the user phase to delete `~/.local/share/DaVinciResolve`
 as well, including the Project Library. That is not reversible.
+
+Uninstalling removes `/opt/resolve/.license` with the rest of the tree. On
+Studio, deactivate the licence from inside Resolve first if you want to use
+the key on another machine.
 
 To remove the plugin itself: `omarchy plugin remove nosignal.davinci-resolve`.
 

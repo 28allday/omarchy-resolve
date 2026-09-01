@@ -99,6 +99,11 @@ Item {
   property var jobSteps: []            // [{id,label,state}]
   property var logLines: []
   property string jobResult: ""        // "" while running, then ok | failed | cancelled
+  // A cancel has been asked for and the process has not yet gone away. The
+  // root phase is a uid-0 process started by pkexec, which this session
+  // cannot signal, so cancelling it means asking pkexec to deliver the
+  // signal — a second password prompt — and waiting for the exit.
+  property bool cancelling: false
   // Options captured when the job started, so the user phase runs with the
   // same choices even if the toggles are changed mid-install.
   property var _pendingUserArgs: []
@@ -258,12 +263,33 @@ Item {
   }
 
   function cancelJob() {
-    if (!busy) return
+    if (!busy || cancelling) return
+    if (jobPhase === "root") {
+      // Killing jobProc here would be a no-op: the process runs as root and
+      // the kill fails with EPERM, while the panel would report "Cancelled"
+      // over an install that carries on to completion in the background.
+      var pid = Number(jobProc.processId || 0)
+      if (!(pid > 0)) return
+      cancelling = true
+      appendLog("")
+      appendLog("Stopping needs your password again — the running phase belongs to root.")
+      killProc.command = ["pkexec", "kill", "-TERM", String(pid)]
+      killProc.running = true
+      return
+    }
+    cancelling = true
     jobProc.running = false
+  }
+
+  // Common tail for both cancel routes, run once the process has really gone.
+  function finishCancel() {
+    cancelling = false
     busy = false
     jobResult = "cancelled"
     appendLog("")
     appendLog("Cancelled. The system may be left half-installed — run the install again to finish.")
+    jobFinished(jobKind, false)
+    refresh()
   }
 
   // ----------------------------------------------------------- diagnostics
@@ -368,6 +394,7 @@ Item {
     stderr: SplitParser { onRead: function(data) { root.handleLine(data) } }
     onExited: function(exitCode) {
       if (root.jobResult === "cancelled") return
+      if (root.cancelling) { root.finishCancel(); return }
 
       if (exitCode !== 0) {
         root.busy = false
@@ -400,6 +427,26 @@ Item {
       root.jobFinished(root.jobKind, true)
       root.refresh()
       root.diagnose()
+    }
+  }
+
+  // Delivers SIGTERM to the root phase through pkexec. The engine traps it,
+  // finishes the command in flight, restores anything it set aside and exits;
+  // jobProc.onExited then completes the cancel. A dismissed prompt means the
+  // install simply continues, and the panel goes back to saying so.
+  Process {
+    id: killProc
+    running: false
+    command: []
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.appendLog("Stop requested — finishing the current step, then cleaning up.")
+        return
+      }
+      root.cancelling = false
+      root.appendLog(exitCode === 126 || exitCode === 127
+                     ? "Not stopped — authentication was dismissed. The install continues."
+                     : "Not stopped (kill exited " + exitCode + "). The install continues.")
     }
   }
 

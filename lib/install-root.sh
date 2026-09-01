@@ -33,6 +33,19 @@ root_install_packages() {
     run pacman -Syu --noconfirm || step_warn "System upgrade reported errors"
   else
     run pacman -Sy --noconfirm >/dev/null 2>&1 || step_warn "Package database sync failed"
+    # Adding packages against a freshly synced database while the rest of the
+    # system is behind it is a partial upgrade — the thing Arch warns about,
+    # because a new package can link against a library the system has not
+    # caught up to yet. Say how far behind rather than silently doing it.
+    if [[ "${DRY_RUN}" != "1" ]]; then
+      local behind
+      behind="$(pacman -Qu 2>/dev/null | grep -vc '\[ignored\]' || true)"
+      if (( behind > 0 )); then
+        warn "  ${behind} installed package(s) are behind the package database. Installing"
+        warn "  against it is a partial upgrade; if anything misbehaves afterwards, run"
+        warn "  'omarchy update' (or pacman -Syu) and try again."
+      fi
+    fi
   fi
 
   # `ffmpeg` is ours, not Resolve's: diagnose uses it for the NVENC encoder and
@@ -259,11 +272,37 @@ root_link_certs() {
 # EXIT trap whether we succeed, fail, or get interrupted.
 WORKDIR=""
 APPDIR=""
+LICENSE_KEEP=""
 root_cleanup() {
+  # An interrupted reinstall must not lose the Studio activation that was set
+  # aside in root_install_tree(): put it back wherever the run stopped.
+  if [[ -n "${LICENSE_KEEP:-}" && -d "${LICENSE_KEEP}/.license" ]]; then
+    if [[ ! -d "${RESOLVE_PREFIX}/.license" ]]; then
+      mkdir -p "${RESOLVE_PREFIX}" 2>/dev/null || true
+      mv "${LICENSE_KEEP}/.license" "${RESOLVE_PREFIX}/.license" 2>/dev/null \
+        && log "Restored ${RESOLVE_PREFIX}/.license (Studio activation)"
+    fi
+    if [[ -d "${LICENSE_KEEP}/.license" ]]; then
+      warn "Studio activation left at ${LICENSE_KEEP}/.license — move it back to ${RESOLVE_PREFIX}/.license"
+    else
+      rmdir "${LICENSE_KEEP}" 2>/dev/null || true
+    fi
+  fi
   if [[ -n "${WORKDIR:-}" && -d "${WORKDIR}" ]]; then
     log "Cleaning up temporary directory…"
     rm -rf "${WORKDIR}" 2>/dev/null || true
   fi
+}
+
+# SIGTERM arrives when the panel's Cancel button is used on the root phase (it
+# has to ask pkexec to deliver it, since a user session cannot signal a root
+# process). Bash defers the trap until the current foreground command returns,
+# so a copy or a patchelf finishes rather than being cut mid-write; then the
+# EXIT trap above restores the licence and removes the scratch directory.
+root_interrupted() {
+  warn "Stopped by request — cleaning up. The install is incomplete; run it again to finish."
+  emit_done 143
+  exit 143
 }
 
 root_extract() {
@@ -383,6 +422,22 @@ root_fix_libs() {
 
 root_install_tree() {
   step copy "Installing to ${RESOLVE_PREFIX}…"
+  # DaVinci Resolve Studio keeps its activation in .license inside the prefix,
+  # so wiping the tree for a reinstall or update would take the activation
+  # with it and every update through the panel would end in the licence
+  # dialog. Set it aside first and put it back over the fresh copy. The
+  # holding directory sits beside the prefix so the move is a rename, and the
+  # EXIT trap returns it if the run stops in between.
+  if [[ -d "${RESOLVE_PREFIX}/.license" ]]; then
+    if [[ "${DRY_RUN}" == "1" ]]; then
+      echo "   would keep ${RESOLVE_PREFIX}/.license (Studio activation) across the reinstall"
+    else
+      LICENSE_KEEP="$(mktemp -d "$(dirname "${RESOLVE_PREFIX}")/.omarchy-resolve-license-XXXXXX")"
+      mv "${RESOLVE_PREFIX}/.license" "${LICENSE_KEEP}/.license" \
+        || step_fail "Could not set aside ${RESOLVE_PREFIX}/.license before the reinstall"
+      log "  Keeping the existing .license (Studio activation) across the reinstall"
+    fi
+  fi
   run rm -rf "${RESOLVE_PREFIX}"
   run mkdir -p "${RESOLVE_PREFIX}"
   if [[ "${DRY_RUN}" != "1" ]]; then
@@ -391,6 +446,13 @@ root_install_tree() {
     else
       cp -a "${APPDIR}/." "${RESOLVE_PREFIX}/" || step_fail "Copy to ${RESOLVE_PREFIX} failed"
     fi
+  fi
+  if [[ -n "${LICENSE_KEEP}" && -d "${LICENSE_KEEP}/.license" ]]; then
+    rm -rf "${RESOLVE_PREFIX}/.license"
+    mv "${LICENSE_KEEP}/.license" "${RESOLVE_PREFIX}/.license" \
+      || step_fail "Could not restore the Studio activation from ${LICENSE_KEEP}/.license"
+    rmdir "${LICENSE_KEEP}" 2>/dev/null || true
+    LICENSE_KEEP=""
   fi
   # DaVinci Resolve Studio writes its activation into this directory as the
   # user running Resolve — but the install creates it as root, so left alone it
@@ -636,6 +698,28 @@ HEAD
 
     cat <<'TAIL'
 
+# --------------------------------------------------------------- overrides
+# Two override files, system then user, read at two points. Here, before the
+# pick, so RESOLVE_GPU_BDF and RESOLVE_NO_PIN set in them actually steer it;
+# and again at the very end, so any variable they export outright wins over
+# what the pick sets. Editing this file instead is pointless: every install
+# and update rewrites it from scratch.
+#
+# Hybrid laptops that display through an iGPU and want the NVIDIA card put:
+#   export __NV_PRIME_RENDER_OFFLOAD=1
+#   export __GLX_VENDOR_LIBRARY_NAME=nvidia
+resolve_read_overrides() {
+  local override
+  for override in /etc/omarchy-resolve/wrapper.env \
+                  "${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/omarchy-resolve/wrapper.env"; do
+    if [[ -r "${override}" ]]; then
+      # shellcheck disable=SC1090
+      source "${override}"
+    fi
+  done
+}
+resolve_read_overrides
+
 # ------------------------------------------------------------ GPU environment
 # RESOLVE_NO_PIN=1 turns all of this off; RESOLVE_GPU_BDF=0000:XX:YY.Z picks a
 # specific card. Both are read by the picker above.
@@ -665,7 +749,12 @@ if [[ "${RESOLVE_NO_PIN:-0}" != "1" ]] && read -r RESOLVE_VENDOR RESOLVE_BDF RES
       export ROCM_PATH=/opt/rocm
       export LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/lib64:${LD_LIBRARY_PATH:-}"
       export OCL_ICD_VENDORS="${OCL_ICD_VENDORS:-/etc/OpenCL/vendors}"
-      export ROCR_VISIBLE_DEVICES=0
+      # ROCm numbers GPUs by amdkfd node order, which is not PCI order and not
+      # "the discrete one first". Pin by this card's actual index so a Radeon
+      # APU beside a Radeon card cannot end up as the device Resolve computes
+      # on. Falls back to 0 — the single-Radeon case — when the topology is
+      # not readable.
+      export ROCR_VISIBLE_DEVICES="$(resolve_rocr_device_index "${RESOLVE_BDF}" 2>/dev/null || echo 0)"
       # Set even for targets ROCm supports natively: on RDNA4 + ROCm 7.1.1,
       # Resolve's clCreateContext needs it present regardless.
       if [[ -n "${RESOLVE_GFX}" ]]; then
@@ -694,17 +783,8 @@ if [[ "${RESOLVE_NO_PIN:-0}" != "1" ]] && read -r RESOLVE_VENDOR RESOLVE_BDF RES
   esac
 fi
 
-# Local overrides, read last so they win. Hybrid laptops that display through
-# an iGPU and want the NVIDIA card want:
-#   export __NV_PRIME_RENDER_OFFLOAD=1
-#   export __GLX_VENDOR_LIBRARY_NAME=nvidia
-for override in /etc/omarchy-resolve/wrapper.env \
-                "${XDG_CONFIG_HOME:-${HOME}/.config}/omarchy-resolve/wrapper.env"; do
-  if [[ -r "${override}" ]]; then
-    # shellcheck disable=SC1090
-    source "${override}"
-  fi
-done
+# Second pass: anything the override files export outright beats the pick.
+resolve_read_overrides
 exec /opt/resolve/bin/resolve "$@"
 TAIL
   } > "${RESOLVE_WRAPPER}"
@@ -831,6 +911,14 @@ do_install_root() {
   fi
   [[ -n "${INSTALL_ZIP}" ]] || { install_root_usage; err "--zip is required"; }
   [[ -f "${INSTALL_ZIP}" ]] || err "No such ZIP: ${INSTALL_ZIP}"
+  # Omarchy 4 ships a pacman hook that aborts any direct `pacman -Syu` — its
+  # updates go through `omarchy update`, which also takes the snapshot and
+  # runs the migrations. Refusing up front beats a step that quietly fails
+  # ten seconds in and carries on as if the upgrade had happened.
+  if [[ "${FULL_UPGRADE}" == "1" ]] && [[ -x /usr/bin/omarchy-update-pacman-guard ]]; then
+    err "--full-upgrade is not available on Omarchy: run 'omarchy update' first, then install without it"
+  fi
+  trap root_interrupted TERM INT
 
   # Decided once, up front: which card Resolve will compute on drives the
   # package list, the compute stack, the BRAW decoders and the launcher.

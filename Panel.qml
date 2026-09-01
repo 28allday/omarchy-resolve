@@ -614,9 +614,10 @@ Item {
                     onClicked: { root.logSource = "install"; root.setTab(3) }
                   }
                   Button {
-                    text: "Cancel"
+                    text: root.hasService && root.svc.cancelling ? "Stopping…" : "Cancel"
                     bordered: true
                     visible: root.hasService && root.svc.busy
+                    enabled: root.hasService && !root.svc.cancelling
                     foreground: root.urgent
                     fontFamily: root.fontFamily
                     onClicked: root.svc.cancelJob()
@@ -801,7 +802,8 @@ Item {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   text: "You will be asked for your password once. Installing takes 10–20 minutes — "
-                      + "most of it patching library paths — and keeps running if you close this panel."
+                      + "most of it patching library paths — and keeps running if you close this panel. "
+                      + "Cancelling during the system phase asks for the password a second time."
                 }
 
                 Row {

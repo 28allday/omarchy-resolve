@@ -56,10 +56,55 @@ resolve_gpu_entries() {
 }
 
 # ------------------------------------------------------------ AMD gfx targets
-# Map an amdkfd topology location_id to a PCI address; the field packs bus,
-# device and function exactly as PCI config space does.
+# Map an amdkfd topology location_id (plus its domain) to a PCI address; the
+# field packs bus, device and function exactly as PCI config space does.
 resolve_kfd_location_to_pci() {
-  printf '%04x:%02x:%02x.%d' 0 $(( ($1 >> 8) & 0xff )) $(( ($1 >> 3) & 0x1f )) $(( $1 & 0x7 ))
+  printf '%04x:%02x:%02x.%d' "${2:-0}" $(( ($1 >> 8) & 0xff )) $(( ($1 >> 3) & 0x1f )) $(( $1 & 0x7 ))
+}
+
+# The amdkfd topology node for a PCI address, as the node directory path, or
+# nothing. CPU nodes (simd_count 0) are skipped: they have no gfx target and
+# no place in ROCm's device numbering.
+resolve_kfd_node_for() {
+  local want="$1" node props loc dom
+  [[ -d /sys/class/kfd/kfd/topology/nodes ]] || return 1
+  for node in /sys/class/kfd/kfd/topology/nodes/*/; do
+    props="${node}properties"
+    [[ -r "${props}" ]] || continue
+    [[ "$(awk '/^simd_count /{print $2}' "${props}")" == "0" ]] && continue
+    loc="$(awk '/^location_id /{print $2}' "${props}")"
+    dom="$(awk '/^domain /{print $2}' "${props}")"
+    [[ -n "${loc}" ]] || continue
+    [[ "$(resolve_kfd_location_to_pci "${loc}" "${dom:-0}")" == "${want}" ]] || continue
+    printf '%s' "${node}"
+    return 0
+  done
+  return 1
+}
+
+# ROCm's own number for a GPU — what ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES
+# count in. ROCr enumerates the GPU nodes of the amdkfd topology in node order,
+# so the index is this card's position among them. Pinning by index rather
+# than "0" matters on a machine with two Radeons: an APU next to a discrete
+# card can be node 1 or node 2 depending on probe order, and "0" is a coin
+# toss between the card that was picked and the one that was not.
+resolve_rocr_device_index() {
+  local want="$1" node props loc dom i=0
+  [[ -d /sys/class/kfd/kfd/topology/nodes ]] || return 1
+  # Sorted numerically: the glob would put node 10 before node 2.
+  while IFS= read -r node; do
+    props="${node}/properties"
+    [[ -r "${props}" ]] || continue
+    [[ "$(awk '/^simd_count /{print $2}' "${props}")" == "0" ]] && continue
+    loc="$(awk '/^location_id /{print $2}' "${props}")"
+    dom="$(awk '/^domain /{print $2}' "${props}")"
+    if [[ -n "${loc}" && "$(resolve_kfd_location_to_pci "${loc}" "${dom:-0}")" == "${want}" ]]; then
+      printf '%d' "${i}"
+      return 0
+    fi
+    i=$((i + 1))
+  done < <(find /sys/class/kfd/kfd/topology/nodes -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -t/ -k8,8n)
+  return 1
 }
 
 # gfx target for an AMD GPU, straight from the amdkfd topology the compute
@@ -70,23 +115,12 @@ resolve_kfd_location_to_pci() {
 # gfx1200. ROCm keys off the same number, so this cannot disagree with what
 # Resolve will be handed.
 resolve_amd_gfx_target() {
-  local want="${1#0000:}" node props loc ver maj min stp
-  [[ -d /sys/class/kfd/kfd/topology/nodes ]] || return 1
-  for node in /sys/class/kfd/kfd/topology/nodes/*/; do
-    props="${node}properties"
-    [[ -r "${props}" ]] || continue
-    # simd_count 0 marks the CPU node, which has no gfx target.
-    [[ "$(awk '/^simd_count /{print $2}' "${props}")" == "0" ]] && continue
-    loc="$(awk '/^location_id /{print $2}' "${props}")"
-    [[ -n "${loc}" ]] || continue
-    [[ "$(resolve_kfd_location_to_pci "${loc}")" == "0000:${want}" ]] || continue
-    ver="$(awk '/^gfx_target_version /{print $2}' "${props}")"
-    [[ -n "${ver}" && "${ver}" != "0" ]] || return 1
-    maj=$(( ver / 10000 )); min=$(( (ver / 100) % 100 )); stp=$(( ver % 100 ))
-    printf 'gfx%d%x%x\n' "${maj}" "${min}" "${stp}"
-    return 0
-  done
-  return 1
+  local node ver maj min stp
+  node="$(resolve_kfd_node_for "$1")" || return 1
+  ver="$(awk '/^gfx_target_version /{print $2}' "${node}properties")"
+  [[ -n "${ver}" && "${ver}" != "0" ]] || return 1
+  maj=$(( ver / 10000 )); min=$(( (ver / 100) % 100 )); stp=$(( ver % 100 ))
+  printf 'gfx%d%x%x\n' "${maj}" "${min}" "${stp}"
 }
 
 # HSA_OVERRIDE_GFX_VERSION for a gfx target. Keyed on the target rather than a

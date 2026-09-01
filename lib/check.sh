@@ -83,24 +83,32 @@ gpu_stack_packages() {
   esac
 }
 
+# Names from a package list that pacman does not know, one per line. A single
+# pacman -Q reports every missing name on stderr; this runs on every panel
+# open, so one call for the lot beats one per package.
+packages_not_installed() {
+  (( $# )) || return 0
+  LC_ALL=C pacman -Q "$@" 2>&1 >/dev/null |
+    sed -n "s/^error: package '\(.*\)' was not found$/\1/p"
+}
+
 missing_packages() {
-  local missing=() pkg
-  for pkg in "${BASE_PACKAGES[@]}" $(gpu_stack_packages "${1:-}"); do
-    pacman -Qq "${pkg}" >/dev/null 2>&1 || missing+=("${pkg}")
-  done
-  printf '%s\n' "${missing[@]:-}"
+  local -a pkgs=("${BASE_PACKAGES[@]}")
+  local pkg
+  while IFS= read -r pkg; do [[ -n "${pkg}" ]] && pkgs+=("${pkg}"); done < <(gpu_stack_packages "${1:-}")
+  packages_not_installed "${pkgs[@]}"
 }
 
 # Is the pinned ROCm stack installed at the versions that work with Resolve?
 # Echoes ok | drift | absent, and on drift or absent says what it found.
 rocm_pin_state() {
   local pkg ver missing=() wrong=()
-  for pkg in "${ROCM_PIN_PACKAGES[@]}"; do
-    ver="$(pacman -Q "${pkg}" 2>/dev/null | awk '{print $2}')"
-    if [[ -z "${ver}" ]]; then missing+=("${pkg}")
-    elif [[ "${ver}" != *"${ROCM_PIN_VERSION}"* ]]; then wrong+=("${pkg} ${ver}")
-    fi
-  done
+  while IFS= read -r pkg; do [[ -n "${pkg}" ]] && missing+=("${pkg}"); done \
+    < <(packages_not_installed "${ROCM_PIN_PACKAGES[@]}")
+  while read -r pkg ver; do
+    [[ -n "${pkg}" ]] || continue
+    [[ "${ver}" == *"${ROCM_PIN_VERSION}"* ]] || wrong+=("${pkg} ${ver}")
+  done < <(pacman -Q "${ROCM_PIN_PACKAGES[@]}" 2>/dev/null || true)
   if [[ ${#missing[@]} -eq ${#ROCM_PIN_PACKAGES[@]} ]]; then echo "absent|not installed"; return; fi
   if [[ ${#missing[@]} -gt 0 ]]; then echo "drift|missing ${missing[*]}"; return; fi
   if [[ ${#wrong[@]} -gt 0 ]]; then echo "drift|${wrong[*]} (expected ${ROCM_PIN_VERSION})"; return; fi
