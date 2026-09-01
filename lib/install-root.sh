@@ -346,7 +346,21 @@ root_desktop_integration() {
   )
   for src in "${!desktop_files[@]}"; do
     dest="${desktop_files[$src]}"
-    if [[ -f "${src}" ]]; then run install -D -m 0644 "${src}" "${dest}"
+    if [[ -f "${src}" ]]; then
+      run install -D -m 0644 "${src}" "${dest}"
+      # Blackmagic ships these with the literal placeholder
+      # RESOLVE_INSTALL_LOCATION in Path=, Icon= and Exec=; their own .run
+      # installer substitutes it. We install from the extracted AppImage, so
+      # nothing does — and a Path= that does not resolve is fatal, not
+      # cosmetic. The launcher refuses to spawn at all:
+      #
+      #   gtk-launch: error launching application: Failed to change to
+      #   directory "RESOLVE_INSTALL_LOCATION/" (No such file or directory)
+      #
+      # That leaves the RAW Player, RAW Speed Test and Control Panels Setup
+      # entries dead, and .drp/.braw file associations broken — Resolve itself
+      # only escapes because the user entry we write shadows it in the menu.
+      run sed -i "s|RESOLVE_INSTALL_LOCATION|${RESOLVE_PREFIX}|g" "${dest}"
     else warn "  Desktop file not found: ${src}"; fi
   done
 
