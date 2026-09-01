@@ -31,7 +31,14 @@ diag_install() {
 
 diag_wrapper() {
   if [[ ! -x "${RESOLVE_WRAPPER}" ]]; then
-    check_add wrapper "XWayland wrapper" fail "${RESOLVE_WRAPPER} missing — Resolve has no native Wayland support"
+    # An install from before the multi-GPU rewrite left the wrapper under its
+    # old NVIDIA-only name. Saying "missing" about a machine that plainly has
+    # one is the kind of answer that sends people looking in the wrong place.
+    if [[ -x "${RESOLVE_WRAPPER_LEGACY}" ]]; then
+      check_add wrapper "XWayland wrapper" warn "Found the older ${RESOLVE_WRAPPER_LEGACY}, which has no GPU handling for AMD or Intel — re-run the install to replace it"
+    else
+      check_add wrapper "XWayland wrapper" fail "${RESOLVE_WRAPPER} missing — Resolve has no native Wayland support"
+    fi
     return
   fi
   local desktop="${HOME}/.local/share/applications/davinci-resolve-wrapper.desktop"
@@ -141,48 +148,112 @@ diag_license() {
   fi
 }
 
+# Which card Resolve will compute on, and whether the stack behind it is
+# actually there. "nvidia-smi not found" used to be the whole diagnosis, which
+# reads identically on a machine with no NVIDIA card and on one whose driver
+# simply is not installed — opposite problems, opposite fixes. Worse, on an AMD
+# or Intel machine it was the only answer available, and it was always wrong.
 diag_gpu() {
-  # "nvidia-smi not found" was the whole diagnosis before, which reads the same
-  # on a machine with no NVIDIA card and on one whose driver simply is not
-  # installed — opposite problems, opposite fixes. lspci separates them, and
-  # names the other cards present rather than pretending they are not there.
-  local others; others="$(gpu_names_other_than nvidia)"
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    local driver name detail
-    driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || true)"
-    name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || true)"
-    if [[ -n "${driver}" ]]; then
-      detail="${name} — driver ${driver}"
-      [[ -n "${others}" ]] && detail+="; also present: ${others}"
-      check_add gpu "NVIDIA driver" ok "${detail}"
-    else
-      check_add gpu "NVIDIA driver" warn "nvidia-smi present but returned nothing"
-    fi
-  elif has_gpu_vendor nvidia; then
-    check_add gpu "NVIDIA driver" fail \
-      "$(gpu_names nvidia) is installed but nvidia-smi is missing — the NVIDIA driver is not installed"
-  elif [[ -n "${others}" ]]; then
-    check_add gpu "NVIDIA driver" fail \
-      "No NVIDIA GPU — found ${others}. This installer targets NVIDIA; see the AMD sibling project in the README."
-  else
-    check_add gpu "NVIDIA driver" fail "No display adapter detected — is pciutils installed?"
+  resolve_compute_target || true
+  local vendor="${COMPUTE_VENDOR:-none}" bdf="${COMPUTE_BDF}" gfx="${COMPUTE_GFX}"
+
+  if [[ "${vendor}" == "none" ]]; then
+    check_add gpu "Compute GPU" fail "No display adapter found in sysfs — Resolve has nothing to run on"
+    check_add opencl "GPU compute stack" fail "No GPU, so no compute stack"
+    return
   fi
 
-  # ffmpeg lists h264_nvenc whenever it was built with nvenc support, whether or
-  # not there is an NVIDIA card to run it on — so on an AMD or Intel machine the
-  # old check cheerfully reported the encoder as available. Ask about hardware
-  # first.
-  if ! has_gpu_vendor nvidia && ! command -v nvidia-smi >/dev/null 2>&1; then
-    check_add nvenc "NVENC encoder" info "No NVIDIA GPU — NVENC does not apply"
-  elif command -v ffmpeg >/dev/null 2>&1; then
-    if ffmpeg -hide_banner -encoders 2>/dev/null | grep h264_nvenc >/dev/null; then
-      check_add nvenc "NVENC encoder" ok "h264_nvenc available (run the test to confirm it actually encodes)"
-    else
-      check_add nvenc "NVENC encoder" warn "ffmpeg has no h264_nvenc encoder"
-    fi
+  local name kind others detail
+  name="$(gpu_name_at "${bdf}" || echo "${bdf}")"
+  kind="$(resolve_gpu_is_discrete "${vendor}" "${bdf}" "${name}")"
+  others="$(gpu_names_other_than "${vendor}")"
+  detail="${name} at ${bdf} — ${kind}${gfx:+, ${gfx}}"
+  [[ -n "${others}" ]] && detail+="; also present: ${others}"
+
+  # An integrated part chosen while a discrete one sits in the machine means
+  # the pick went wrong, and pinning to the wrong card is the single most
+  # common cause of "OpenCL Context Manager failed to create context".
+  if [[ "${kind}" == "integrated" && -n "${others}" ]]; then
+    check_add gpu "Compute GPU" warn "${detail}. Resolve would use the integrated GPU — override with RESOLVE_GPU_BDF in ${RESOLVE_ENV_DIR}/wrapper.env if that is wrong"
   else
-    check_add nvenc "NVENC encoder" info "ffmpeg not installed — cannot check"
+    check_add gpu "Compute GPU" ok "${detail}"
   fi
+
+  # The stack itself: CUDA on NVIDIA, ROCm on AMD, NEO on Intel. On AMD and
+  # Intel a missing runtime is fatal and silent — Resolve exits at startup with
+  # "Unsupported GPU Processing Mode" and says nothing about why.
+  local stack state
+  stack="$(compute_stack_state "${vendor}" "${gfx}")"
+  state="${stack%%|*}"
+  check_add opencl "GPU compute stack" "${state}" "${stack#*|}"
+
+  # A pin that has been lifted is worth saying out loud: the packages are still
+  # right today, and the next routine pacman -Syu takes Resolve out.
+  if [[ "${vendor}" == "amd" ]]; then
+    if rocm_pin_in_pacman_conf; then
+      check_add rocmpin "ROCm version pin" ok "IgnorePkg holds ROCm at ${ROCM_PIN_VERSION} in ${PACMAN_CONF}"
+    else
+      check_add rocmpin "ROCm version pin" warn "No IgnorePkg pin in ${PACMAN_CONF} — the next 'pacman -Syu' can pull ROCm forward and stop Resolve launching"
+    fi
+  fi
+
+  # The launcher is where the GPU choice actually takes effect, so check what
+  # it will do rather than trusting that the install wrote what we expected.
+  # DRI_PRIME=1 is the specific value that must never appear: it means "the
+  # other card", which flips OpenGL to the iGPU on exactly the machines this
+  # is meant to fix.
+  if [[ -r "${RESOLVE_WRAPPER}" ]]; then
+    if grep -qE '^\s*export DRI_PRIME=1\s*$' "${RESOLVE_WRAPPER}"; then
+      check_add gpupin "Launcher GPU pin" fail "${RESOLVE_WRAPPER} sets DRI_PRIME=1, which selects the OTHER card — reinstall to get the PCI-address form"
+    elif grep -q 'resolve_gpu_pick' "${RESOLVE_WRAPPER}"; then
+      check_add gpupin "Launcher GPU pin" ok "Launcher picks its GPU at run time with the same rules as this check"
+    else
+      check_add gpupin "Launcher GPU pin" warn "${RESOLVE_WRAPPER} predates GPU-aware launching — reinstall to refresh it"
+    fi
+  fi
+
+  # A card swap after install: the packages and launcher were chosen for a
+  # vendor that is no longer the one in the machine.
+  local stamped; stamped="$(stamp_field computeVendor)"
+  if [[ -n "${stamped}" && "${stamped}" != "${vendor}" ]]; then
+    check_add gpuchange "GPU changed since install" warn "Installed for ${stamped}, now running ${vendor} — re-run the install so the compute stack and launcher match"
+  fi
+}
+
+# Hardware encoding, asked per vendor. ffmpeg lists h264_nvenc whenever it was
+# built with NVENC support, whether or not there is an NVIDIA card to run it
+# on — so the old check cheerfully reported the encoder as available on AMD and
+# Intel machines that had no such thing.
+diag_encoder() {
+  local vendor="${COMPUTE_VENDOR:-none}"
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    check_add nvenc "Hardware encoder" info "ffmpeg not installed — cannot check"
+    return
+  fi
+  local encoders; encoders="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
+  case "${vendor}" in
+    nvidia)
+      if printf '%s' "${encoders}" | grep -q h264_nvenc; then
+        check_add nvenc "Hardware encoder" ok "NVENC (h264_nvenc) available — run the test to confirm it actually encodes"
+      else
+        check_add nvenc "Hardware encoder" warn "ffmpeg has no h264_nvenc encoder"
+      fi ;;
+    amd|intel)
+      # VA-API is the shared path on both. Resolve's own renders do not go
+      # through ffmpeg, but a working VA-API encoder is good evidence the GPU
+      # is usable for media work at all, and it is what the AAC Fix and the
+      # convert helper use.
+      local node; node="$(resolve_render_node "${COMPUTE_BDF}" 2>/dev/null || true)"
+      if printf '%s' "${encoders}" | grep -q h264_vaapi && [[ -n "${node}" ]]; then
+        check_add nvenc "Hardware encoder" ok "VA-API (h264_vaapi) on ${node} — run the test to confirm it actually encodes"
+      elif printf '%s' "${encoders}" | grep -q h264_vaapi; then
+        check_add nvenc "Hardware encoder" warn "ffmpeg has h264_vaapi but the chosen GPU exposes no DRM render node to encode with"
+      else
+        check_add nvenc "Hardware encoder" warn "ffmpeg has no h264_vaapi encoder — install a VA-API capable ffmpeg for hardware transcode"
+      fi ;;
+    *)
+      check_add nvenc "Hardware encoder" info "No supported GPU — hardware encoding does not apply" ;;
+  esac
 }
 
 # Resolve 21 on Linux ships its own ProRes RAW decoder (libs/libProResRAW.so)
@@ -268,6 +339,7 @@ do_diagnose() {
   diag_audio
   diag_license
   diag_gpu
+  diag_encoder
   diag_aacfix
   diag_prores_raw
   diag_logs
@@ -346,27 +418,84 @@ do_probe() {
 }
 
 # Rules out a driver problem before blaming Resolve.
+# Prove the hardware encoder actually encodes, rather than merely being listed.
+# Keeps the nvenc-test name the panel calls, but tests whichever encoder this
+# machine's GPU actually has: NVENC on NVIDIA, VA-API on AMD and Intel.
 do_nvenc_test() {
   if ! command -v ffmpeg >/dev/null 2>&1; then
     printf '{%s,%s}\n' "$(json_str state info)" "$(json_str detail "ffmpeg not installed")"
     return 0
   fi
+  resolve_compute_target || true
+  local -a args=() ; local label="" node=""
+  case "${COMPUTE_VENDOR:-none}" in
+    nvidia) label="NVENC"; args=(-c:v h264_nvenc) ;;
+    amd|intel)
+      label="VA-API"
+      # The render node of the card that was picked, not whichever one happens
+      # to be renderD128 — on a hybrid machine those are routinely different,
+      # and testing the wrong card answers a question nobody asked.
+      node="$(resolve_render_node "${COMPUTE_BDF}" 2>/dev/null || true)"
+      if [[ -z "${node}" ]]; then
+        printf '{%s,%s}\n' "$(json_str state fail)" "$(json_str detail "The chosen GPU at ${COMPUTE_BDF} exposes no DRM render node — nothing to encode with")"
+        return 0
+      fi
+      # shellcheck disable=SC2054  # "format=nv12,hwupload" is one ffmpeg filter
+      # chain, not two array elements — the comma belongs to ffmpeg's syntax.
+      args=(-vaapi_device "${node}" -vf format=nv12,hwupload -c:v h264_vaapi) ;;
+    *)
+      printf '{%s,%s}\n' "$(json_str state info)" "$(json_str detail "No supported GPU — nothing to test")"
+      return 0 ;;
+  esac
+
   # A fresh name every run, and cleaned up whichever way this ends. The old
   # fixed path was left behind on failure, and the next run — failing the same
   # way — found that leftover and called it a pass. A check meant to rule out a
   # driver problem reported all clear precisely when there was one.
   local out log rc=0
-  out="$(mktemp -u "${TMPDIR:-/tmp}/omarchy-resolve-nvenc-XXXXXX.mp4")"
+  out="$(mktemp -u "${TMPDIR:-/tmp}/omarchy-resolve-encode-XXXXXX.mp4")"
   rm -f "${out}" 2>/dev/null || true
   if log="$(ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=duration=2 \
-            -c:v h264_nvenc -y "${out}" 2>&1)"; then rc=0; else rc=$?; fi
+            "${args[@]}" -y "${out}" 2>&1)"; then rc=0; else rc=$?; fi
   if [[ "${rc}" -eq 0 && -s "${out}" ]]; then
     rm -f "${out}" 2>/dev/null || true
-    printf '{%s,%s}\n' "$(json_str state ok)" "$(json_str detail "NVENC encoded a 2-second test clip successfully")"
+    printf '{%s,%s}\n' "$(json_str state ok)" "$(json_str detail "${label} encoded a 2-second test clip successfully")"
   else
     rm -f "${out}" 2>/dev/null || true
-    printf '{%s,%s}\n' "$(json_str state fail)" "$(json_str detail "${log:-NVENC produced no output (ffmpeg exit ${rc})}")"
+    printf '{%s,%s}\n' "$(json_str state fail)" "$(json_str detail "${log:-${label} produced no output (ffmpeg exit ${rc})}")"
   fi
+}
+
+# Everything the GPU logic decided, as JSON. Exists so a GPU question can be
+# answered on a machine without opening the panel or reading the install log —
+# which is how the three sibling installers' --scan flags were used, and the
+# only way to check GPU handling on hardware this repo has never run on.
+do_gpu_report() {
+  resolve_compute_target || true
+  local vendor bdf driver name kind gfx first=1 out="["
+  while IFS='|' read -r vendor bdf driver name; do
+    [[ -n "${vendor}" ]] || continue
+    kind="$(resolve_gpu_is_discrete "${vendor}" "${bdf}" "${name}")"
+    gfx=""
+    [[ "${vendor}" == "amd" ]] && gfx="$(resolve_amd_gfx_target "${bdf}" 2>/dev/null || true)"
+    [[ ${first} -eq 1 ]] || out+=","
+    first=0
+    out+="{$(json_str vendor "${vendor}"),$(json_str name "${name}"),$(json_str bdf "${bdf}")"
+    out+=",$(json_str driver "${driver}"),$(json_str type "${kind}"),$(json_str gfx "${gfx}")"
+    out+=",$(json_bool selected "$([[ ${bdf} == "${COMPUTE_BDF}" ]] && echo 1 || echo 0)")}"
+  done < <(resolve_gpu_entries || true)
+  out+="]"
+
+  local stack; stack="$(compute_stack_state "${COMPUTE_VENDOR}" "${COMPUTE_GFX}")"
+  printf '{'
+  printf '%s,' "$(json_str computeVendor "${COMPUTE_VENDOR}")"
+  printf '%s,' "$(json_str computeBdf "${COMPUTE_BDF}")"
+  printf '%s,' "$(json_str computeGfx "${COMPUTE_GFX}")"
+  printf '%s,' "$(json_str hsaOverride "$([[ ${COMPUTE_VENDOR} == amd && -n ${COMPUTE_GFX} ]] && resolve_hsa_override "${COMPUTE_GFX}" || true)")"
+  printf '%s,' "$(json_str stackState "${stack%%|*}")"
+  printf '%s,' "$(json_str stackDetail "${stack#*|}")"
+  printf '%s'  "$(json_raw gpus "${out}")"
+  printf '}\n'
 }
 
 do_logs() {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # omarchy-resolve — DaVinci Resolve installer and health engine for Omarchy
-# (Arch Linux + Hyprland + NVIDIA).
+# (Arch Linux + Hyprland). Handles NVIDIA, AMD and Intel GPUs: the card decides
+# the compute stack installed and the environment the launcher sets.
 #
 # This is the engine behind both the terminal installer and the Omarchy shell
 # plugin. The work is split into a root phase and a user phase so a GUI caller
@@ -14,7 +15,8 @@
 #   omarchy-resolve uninstall --phase root|user
 #   omarchy-resolve diagnose                   health checks, JSON
 #   omarchy-resolve probe <file>               codec check (ProRes RAW trap)
-#   omarchy-resolve nvenc-test                 confirm NVENC actually encodes
+#   omarchy-resolve nvenc-test                 confirm the GPU encoder works
+#   omarchy-resolve gpu                        report the detected GPUs, JSON
 #   omarchy-resolve logs [lines]               tail ResolveDebug.txt
 #   omarchy-resolve launch                     start Resolve via the wrapper
 #
@@ -35,7 +37,7 @@ source "${LIB_DIR}/uninstall.sh"
 source "${LIB_DIR}/diagnose.sh"
 
 usage() {
-  sed -n '2,25p' "${SELF}" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "${SELF}" | sed 's/^# \{0,1\}//'
 }
 
 # Full install from a terminal: escalate once for the root phase, then drop
@@ -89,7 +91,7 @@ do_install() {
 }
 
 main() {
-  local cmd="${1:-help}"; shift || true
+  local cmd="${1:-help}" launcher; shift || true
 
   # Global flags may appear anywhere; strip them before the subcommand parses.
   local args=()
@@ -109,11 +111,20 @@ main() {
     uninstall)  do_uninstall "${args[@]}" ;;
     diagnose)   do_diagnose ;;
     probe)      [[ -n "${args[0]:-}" ]] || err "usage: omarchy-resolve probe <file>"; do_probe "${args[0]}" ;;
-    nvenc-test) do_nvenc_test ;;
+    nvenc-test|encoder-test) do_nvenc_test ;;
+    gpu)        do_gpu_report ;;
     logs)       do_logs "${args[0]:-200}" ;;
     launch)
-      [[ -x "${RESOLVE_WRAPPER}" ]] || err "Wrapper missing: ${RESOLVE_WRAPPER}"
-      setsid "${RESOLVE_WRAPPER}" >/dev/null 2>&1 &
+      # Fall back to the pre-rename wrapper rather than refusing to start on a
+      # machine that plainly has one — it will not carry the AMD or Intel
+      # environment, which is what diagnose says loudly enough elsewhere.
+      launcher="${RESOLVE_WRAPPER}"
+      if [[ ! -x "${launcher}" && -x "${RESOLVE_WRAPPER_LEGACY}" ]]; then
+        launcher="${RESOLVE_WRAPPER_LEGACY}"
+        warn "Using the older ${launcher} — re-run the install to replace it"
+      fi
+      [[ -x "${launcher}" ]] || err "Wrapper missing: ${RESOLVE_WRAPPER}"
+      setsid "${launcher}" >/dev/null 2>&1 &
       log "Launched DaVinci Resolve" ;;
     version)    echo "omarchy-resolve ${ENGINE_VERSION}" ;;
     help|-h|--help) usage ;;
