@@ -242,7 +242,7 @@ root_install_tree() {
   # mkdir under the prefix:
   #   strace -f -e trace=mkdir,mkdirat /opt/resolve/bin/resolve 2>&1 | grep EACCES
   local support_dir
-  for support_dir in "Apple Immersive"; do
+  for support_dir in "Apple Immersive" "logs"; do
     run mkdir -p "${RESOLVE_PREFIX}/${support_dir}"
     run chmod 7777 "${RESOLVE_PREFIX}/${support_dir}"
   done
@@ -396,6 +396,15 @@ if [[ -r /tmp ]]; then
     [[ -f "$lockfile" ]] && rm -f "$lockfile" 2>/dev/null || true
   done
 fi
+# Resolve's log4cxx config writes ./logs/rollinglog.txt — relative to the
+# working directory, which is wherever the launcher happened to be:
+#   log4cxx: setFile(./logs/rollinglog.txt,true) call failed.
+#   log4cxx: IO Exception : status code = 2
+# Blackmagic's own .desktop sets Path= to the install prefix for this reason,
+# but ships it as the literal placeholder RESOLVE_INSTALL_LOCATION/. Doing it
+# here covers every entry point — app menu, omarchy-resolve launch, and the
+# system .desktop — rather than only the one we write.
+cd /opt/resolve || true
 # Force XWayland under Hyprland/Wayland
 export QT_QPA_PLATFORM=xcb
 export QT_AUTO_SCREEN_SCALE_FACTOR=1

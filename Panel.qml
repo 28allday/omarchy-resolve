@@ -738,17 +738,6 @@ Item {
                   onClicked: root.svc.optDryRun = !root.svc.optDryRun
                 }
 
-                Toggle {
-                  width: parent.width
-                  label: "Full system upgrade first"
-                  description: "Runs pacman -Syu. Can pull in a new kernel or NVIDIA driver mid-install."
-                  checked: root.hasService ? root.svc.optFullUpgrade : false
-                  foreground: root.foreground
-                  accent: root.accent
-                  fontFamily: root.fontFamily
-                  onClicked: root.svc.optFullUpgrade = !root.svc.optFullUpgrade
-                }
-
                 Text {
                   width: parent.width
                   wrapMode: Text.WordWrap

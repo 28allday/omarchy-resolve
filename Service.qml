@@ -63,7 +63,6 @@ Item {
   property string selectedZip: ""
 
   // Install options, mirroring the engine's flags.
-  property bool optFullUpgrade: false
   property bool optAloop: true
   property bool optHyprRules: true
   property bool optAacFix: true
@@ -200,7 +199,6 @@ Item {
 
     var args = ["pkexec", engine, "install", "--phase", "root", "--machine", "--zip", zip]
     if (optDryRun) args.push("--dry-run")
-    if (optFullUpgrade) args.push("--full-upgrade")
     if (!optAloop) args.push("--no-aloop")
 
     _pendingUserArgs = ["bash", engine, "install", "--phase", "user", "--machine"]
