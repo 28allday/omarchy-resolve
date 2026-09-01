@@ -160,14 +160,36 @@ root_fix_libs() {
 
   # Control-surface libraries (Editor Keyboard, Mini/Micro Panel) ship in a
   # tarball that nothing unpacks for us.
+  #
+  # That tarball carries its own copy of the C++ runtime — lib/libc++.so.1 and
+  # lib/libc++abi.so.1, built for the panel framework and older than Resolve's.
+  # Moving the tarball in wholesale replaces Resolve's libc++ symlinks with it,
+  # and Resolve then dies the moment it is exec'd:
+  #
+  #   /opt/resolve/bin/resolve: symbol lookup error: /opt/resolve/bin/resolve:
+  #   undefined symbol: _ZNSt3__117bad_function_callD1Ev
+  #
+  # Launched from the app menu that is invisible: no window, no message. So the
+  # tarball may only ADD names to libs/ — anything already there is Resolve's
+  # own and wins. Skipped files stay in share/panels/lib, which is outside
+  # every RPATH we set below and so is never loaded from.
   if [[ -d "share/panels" ]]; then
     pushd "share/panels" >/dev/null || step_fail "Could not enter share/panels"
     tar -zxf dvpanel-framework-linux-x86_64.tgz 2>/dev/null || true
     mkdir -p "${APPDIR}/libs"
-    find . -maxdepth 1 -type f -name '*.so' -exec mv -f {} "${APPDIR}/libs" \; 2>/dev/null || true
-    if [[ -d lib ]]; then
-      find lib -type f -name '*.so*' -exec mv -f {} "${APPDIR}/libs" \; 2>/dev/null || true
-    fi
+    local panel_lib panel_name
+    while IFS= read -r -d '' panel_lib; do
+      panel_name="$(basename "${panel_lib}")"
+      if [[ -e "${APPDIR}/libs/${panel_name}" || -L "${APPDIR}/libs/${panel_name}" ]]; then
+        log "  Keeping Resolve's own ${panel_name} over the panel framework's"
+        continue
+      fi
+      mv -f "${panel_lib}" "${APPDIR}/libs" 2>/dev/null || true
+    done < <(
+      find . -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null || true
+      [[ -d lib ]] && { find lib -type f -name '*.so*' -print0 2>/dev/null || true; }
+      true
+    )
     popd >/dev/null || true
   fi
 
