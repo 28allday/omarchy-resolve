@@ -56,7 +56,23 @@ Item {
   // newer | older | same | unknown — how the ZIP that would be installed
   // compares to what is installed now.
   readonly property string zipRelation: String(info.zipRelation || "unknown")
-  readonly property bool hasNvidia: String(info.gpu || "") === "nvidia"
+  // The GPU Resolve will compute on, and whether the stack behind it is there.
+  // `gpu` is a considered pick across every card in the machine, not "the
+  // first one of the vendor we like best" — on this desktop that is the RTX
+  // 5060 Ti rather than the Raphael iGPU sitting beside it.
+  readonly property string computeVendor: String(info.gpu || "")
+  readonly property string computeName: String(info.computeName || "")
+  readonly property string computeApi: String(info.computeApi || "")
+  readonly property string computeGfx: String(info.computeGfx || "")
+  // ok | warn | fail — can Resolve actually compute? On AMD and Intel a
+  // missing runtime is fatal and silent: Resolve exits at startup with
+  // "Unsupported GPU Processing Mode" and explains nothing.
+  readonly property string stackState: String(info.stackState || "")
+  readonly property string stackDetail: String(info.stackDetail || "")
+  readonly property bool hasNvidia: computeVendor === "nvidia"
+  readonly property string vendorLabel: computeVendor === "nvidia" ? "NVIDIA"
+      : computeVendor === "amd" ? "AMD"
+      : computeVendor === "intel" ? "Intel" : ""
 
   // Which ZIP the user picked; defaults to the newest, matching what the
   // terminal installer would have chosen on its own.

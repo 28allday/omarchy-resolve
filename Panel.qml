@@ -371,10 +371,25 @@ Item {
 
               Repeater {
                 model: root.hasService ? [
-                  { label: "GPU", value: String(root.svc.info.driverVersion || "") !== ""
-                      ? "NVIDIA, driver " + root.svc.info.driverVersion
-                      : "no NVIDIA driver detected",
-                    state: root.svc.hasNvidia ? "ok" : "fail" },
+                  // The card Resolve will compute on, named, plus the API it
+                  // will use. A machine with two GPUs gets told which one won.
+                  { label: "GPU", value: (function() {
+                      var s = root.svc
+                      if (s.computeVendor === "" || s.computeVendor === "none")
+                        return "no GPU detected"
+                      var v = s.vendorLabel + (s.computeName !== "" ? " " + s.computeName : "")
+                      if (s.computeVendor === "nvidia" && String(s.info.driverVersion || "") !== "")
+                        v += ", driver " + s.info.driverVersion
+                      if (s.computeGfx !== "") v += " (" + s.computeGfx + ")"
+                      return v
+                    })(),
+                    state: root.svc.stackState === "" ? "warn" : root.svc.stackState },
+                  // Whether the compute stack is actually installed. This is
+                  // the line that decides whether an install can succeed at
+                  // all on an AMD or Intel machine.
+                  { label: root.svc.computeApi !== "" ? root.svc.computeApi : "Compute",
+                    value: root.svc.stackDetail !== "" ? root.svc.stackDetail : "not checked yet",
+                    state: root.svc.stackState === "" ? "warn" : root.svc.stackState },
                   { label: "Installer ZIP", value: root.svc.zips.length > 0
                       ? String(root.svc.info.zipEdition || "") + " " + String(root.svc.info.zipVersion || "")
                         + " in " + String(root.svc.info.zipDir || "")
@@ -689,6 +704,46 @@ Item {
                 }
 
                 PanelSectionHeader {
+                  text: "GPU"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                // What the install will do about the card in this machine.
+                // Said before the password prompt rather than after, because
+                // on AMD it includes holding a package version back system
+                // wide, and that is not a thing to discover afterwards.
+                Text {
+                  width: parent.width
+                  wrapMode: Text.WordWrap
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  text: {
+                    if (!root.hasService) return ""
+                    var s = root.svc
+                    if (s.computeVendor === "" || s.computeVendor === "none")
+                      return "No GPU detected. Resolve needs one — the install will not get you a working Resolve on this machine."
+                    var who = s.vendorLabel + (s.computeName !== "" ? " " + s.computeName : "")
+                    if (s.computeVendor === "nvidia")
+                      return "Will set up for " + who + ", computing with CUDA from the installed driver. "
+                           + "Nothing extra is installed for the GPU."
+                    if (s.computeVendor === "amd")
+                      return "Will set up for " + who + (s.computeGfx !== "" ? " (" + s.computeGfx + ")" : "")
+                           + ", computing with ROCm OpenCL. ROCm 7.1.1 is downloaded from the Arch Linux Archive "
+                           + "and held there with an IgnorePkg line in /etc/pacman.conf: later ROCm releases break "
+                           + "Resolve, and a routine system update would otherwise stop it launching. Uninstall lifts the hold again."
+                    if (s.computeVendor === "intel")
+                      return "Will set up for " + who + ", computing with Intel's NEO OpenCL runtime. "
+                           + "Blackmagic does not officially support Intel GPUs on Linux — editing and playback "
+                           + "generally work, but the Neural Engine, some effects and noise reduction may fall back "
+                           + "to the CPU or fail outright. Treat this as experimental."
+                    return "Unrecognised GPU. Resolve needs an NVIDIA, AMD or Intel card."
+                  }
+                }
+
+                PanelSectionHeader {
                   text: "OPTIONS"
                   foreground: root.foreground
                   fontFamily: root.fontFamily
@@ -862,9 +917,12 @@ Item {
                 fontFamily: root.fontFamily
               }
 
-              // NVENC: rules out the driver before blaming Resolve.
+              // Hardware encode: rules out the driver before blaming Resolve.
+              // NVENC on NVIDIA, VA-API on AMD and Intel — the engine picks
+              // whichever this machine actually has.
               Button {
-                text: "Test NVENC"
+                text: root.hasService && root.svc.computeVendor === "nvidia"
+                      ? "Test NVENC" : "Test hardware encoder"
                 bordered: true
                 fontFamily: root.fontFamily
                 enabled: root.hasService && root.svc.nvencState !== "running"
