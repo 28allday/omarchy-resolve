@@ -246,7 +246,16 @@ do_diagnose() {
   diag_logs
   diag_disk
 
-  local running=0; pgrep -x resolve >/dev/null 2>&1 && running=1
+  # Resolve renames its main thread, so the process comm is "GUI Thread", not
+  # "resolve" — pgrep -x never matched and this always reported "not running".
+  # Match on the executable instead; pgrep -f would false-positive on any
+  # command line that merely mentions the path (this script's own, for one).
+  local running=0 _p
+  for _p in /proc/[0-9]*; do
+    if [[ "$(readlink -f "${_p}/exe" 2>/dev/null)" == "${RESOLVE_PREFIX}/bin/resolve" ]]; then
+      running=1; break
+    fi
+  done
   printf '{'
   printf '%s,' "$(json_bool running "${running}")"
   printf '%s,' "$(json_str debugLog "${DEBUG_LOG_DEFAULT}")"
