@@ -31,9 +31,14 @@ do_uninstall_root() {
 
   step launchers "Removing launchers…"
   run rm -f "${RESOLVE_WRAPPER}"
+  # The pre-rewrite name, still on any machine installed before this engine
+  # handled more than NVIDIA. Leaving it behind leaves a launcher pointing at
+  # a prefix that has just been deleted.
+  run rm -f "${RESOLVE_WRAPPER_LEGACY}"
   # Only remove the shim if it is ours — a hand-written or packaged
   # /usr/bin/davinci-resolve is not this installer's to delete.
-  if [[ -f "${RESOLVE_SHIM}" ]] && grep -q "${RESOLVE_WRAPPER}" "${RESOLVE_SHIM}" 2>/dev/null; then
+  if [[ -f "${RESOLVE_SHIM}" ]] &&
+     grep -qE "${RESOLVE_WRAPPER}|${RESOLVE_WRAPPER_LEGACY}" "${RESOLVE_SHIM}" 2>/dev/null; then
     run rm -f "${RESOLVE_SHIM}"
   fi
   local f
@@ -65,6 +70,29 @@ do_uninstall_root() {
   step aloop "Removing snd-aloop autoload…"
   run rm -f "${ALOOP_CONF}"
   step_ok
+  emit_progress 92
+
+  # The ROCm pin exists only to keep Resolve working, so it goes with Resolve —
+  # but only the line this installer wrote. A pin someone put there themselves,
+  # or one left by the standalone AMD script, has no marker and is left alone:
+  # silently un-holding someone else's packages is not ours to do.
+  step rocmpin "Lifting the ROCm version pin…"
+  if [[ ! -r "${PACMAN_CONF}" ]] || ! grep -qF "${ROCM_PIN_MARKER}" "${PACMAN_CONF}" 2>/dev/null; then
+    if grep -qE '^IgnorePkg.*rocm-core' "${PACMAN_CONF}" 2>/dev/null; then
+      step_skip "A ROCm pin is present but was not written by this installer — left in place"
+    else
+      step_skip "No ROCm pin to remove"
+    fi
+  elif [[ "${DRY_RUN}" == "1" ]]; then
+    echo "   would remove the marker line and its IgnorePkg line from ${PACMAN_CONF}"
+    step_skip "dry run"
+  else
+    # The marker sits immediately above the line it describes, so delete the
+    # marker and the line after it — never every IgnorePkg in the file.
+    sed -i "\|^${ROCM_PIN_MARKER}\$|,+1d" "${PACMAN_CONF}"
+    step_ok "ROCm is no longer held back in ${PACMAN_CONF}"
+    log "  The pinned ROCm ${ROCM_PIN_VERSION} packages are still installed; 'pacman -Syu' will now update them"
+  fi
   # /etc/pki/tls is left alone on purpose: it is a symlink to /etc/ssl that
   # other CentOS-flavoured software may also be relying on by now.
   log "Left /etc/pki/tls in place (other software may use it)"
