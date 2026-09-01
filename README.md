@@ -186,12 +186,23 @@ audio interface Resolve is happy with.
 
 ### Hybrid GPU laptops (Optimus)
 
-Edit `/usr/local/bin/resolve-nvidia-open` and uncomment:
+Do not edit `/usr/local/bin/resolve-nvidia-open` directly. Every install and
+update writes that file from scratch, so changes made in it are reverted the
+next time you update Resolve — silently, and the machine quietly goes back to
+the wrong GPU. Put them in an override file instead. The wrapper sources these
+immediately before launching, and no install touches either:
 
 ```bash
+mkdir -p ~/.config/omarchy-resolve
+cat > ~/.config/omarchy-resolve/wrapper.env <<'EOF'
 export __NV_PRIME_RENDER_OFFLOAD=1
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
+EOF
 ```
+
+`/etc/omarchy-resolve/wrapper.env` does the same for every user on the machine.
+It is read first, so a user's own file wins where both set the same variable.
+Anything else Resolve should launch with goes here too.
 
 ## Troubleshooting
 
