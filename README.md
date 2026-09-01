@@ -1,8 +1,10 @@
 # omarchy-resolve
 
 Install, repair and diagnose [DaVinci Resolve](https://www.blackmagicdesign.com/products/davinciresolve)
-on [Omarchy](https://omarchy.com) (Arch Linux + Hyprland, NVIDIA) — from a panel
-in the shell, or from the terminal.
+on [Omarchy](https://omarchy.com) (Arch Linux + Hyprland) — from a panel in the
+shell, or from the terminal. NVIDIA, AMD and Intel GPUs are all handled: the
+card in the machine decides which compute stack gets installed and what the
+launcher sets up before Resolve starts.
 
 Resolve is built for CentOS/RHEL and bundles its own copies of libraries that
 Arch has moved on from. Getting it running means replacing some of those and
@@ -17,7 +19,8 @@ wrong later.
 
 - **OS**: Omarchy 4 (Arch Linux). The panel needs omarchy-shell; the engine
   alone works on any Arch + Hyprland install.
-- **GPU**: NVIDIA with working proprietary drivers.
+- **GPU**: NVIDIA, AMD or Intel — see [Your GPU](#your-gpu). Resolve does all
+  its work on the GPU, so this is the one requirement it will not run without.
 - **Audio**: PipeWire + Wireplumber 0.5+ (Omarchy default) — the audio fix uses
   the SPA-JSON rule format introduced in 0.5.
 - **Kernel**: any with `snd-aloop` available (`modinfo snd-aloop`).
@@ -49,15 +52,15 @@ bin/omarchy-resolve install
 ```
 
 Then launch Resolve from your app menu, from the panel, or with
-`resolve-nvidia-open`.
+`resolve-omarchy`.
 
 ## The panel
 
 | Tab | What it is for |
 |-----|----------------|
-| **Status** | What is installed, which GPU and driver, which ZIP is waiting, whether a newer one has appeared. Launch Resolve from here. |
+| **Status** | What is installed, which GPU Resolve will compute on and whether its stack is ready, which ZIP is waiting, whether a newer one has appeared. Launch Resolve from here. |
 | **Install** | Pick the ZIP, set the options, install or uninstall. Live progress and a step list while it runs. |
-| **Health** | The checks that explain Resolve misbehaving — audio backend, snd-aloop, window rules, opacity, NVENC, AAC Fix, log errors, disk space — plus an NVENC test and a codec probe. |
+| **Health** | The checks that explain Resolve misbehaving — audio backend, snd-aloop, window rules, opacity, the GPU and its compute stack, AAC Fix, log errors, disk space — plus a hardware-encoder test and a codec probe. |
 | **Log** | The install log as it happens, or the tail of Resolve's own `ResolveDebug.txt`. |
 
 Things worth knowing:
@@ -125,12 +128,16 @@ into `/root`, so the engine refuses to do it.
    Qt WebEngine library, which cannot be skipped for size because it links to
    other Resolve libraries. This is the slow part.
 5. **Symlinks legacy `libcrypt.so.1`**, which Arch replaced with `.so.2`.
-6. **Installs an XWayland wrapper** at `/usr/local/bin/resolve-nvidia-open`:
+6. **Installs an XWayland wrapper** at `/usr/local/bin/resolve-omarchy`:
    Resolve has no native Wayland support, so it forces `QT_QPA_PLATFORM=xcb`,
    clears the Qt single-instance lockfiles a crash leaves behind, unsets the
    Kvantum/GTK Qt theme variables Omarchy sets globally (Resolve's bundled Qt
    has neither plugin), and runs Resolve from `/opt/resolve` so its rolling log
    lands in the install tree instead of wherever the launcher happened to be.
+   The wrapper also carries the [GPU environment](#your-gpu), and works out
+   which card to use when it runs rather than having one baked in at install
+   time — so adding, removing or re-seating a card cannot leave it pinned to
+   something that is no longer there.
 7. **Makes the directories Resolve writes into inside the prefix writable.**
    Most of its support directories live under `~/.local/share/DaVinciResolve`
    and it creates those itself; a handful land in the root-owned install tree
@@ -184,9 +191,91 @@ audio interface Resolve is happy with.
 | Write the local window rules anyway | — | `--force-hypr-rules` |
 | Change nothing, just report | Dry run | `--dry-run` |
 
+## Your GPU
+
+Resolve renders, grades and plays back on the GPU; the CPU path is not a
+fallback it can limp along on. What that needs differs by vendor, and getting
+it wrong does not produce a slow Resolve — it produces one that exits at
+startup with `Unsupported GPU Processing Mode` and no further explanation.
+
+The install detects every card in the machine, picks the one Resolve should
+use, and sets the rest up around that choice. The pick prefers a discrete card
+over an integrated one, and reads the kernel to tell them apart — sysfs and
+amdkfd's own topology, never lspci product names. A name does not say whether a
+part is on the CPU package: AMD's Raphael iGPU is called "Raphael", matches
+none of the usual integrated-graphics keywords, and on a name-based check beats
+an RTX 5060 Ti sitting in the same box.
+
+| Card | Compute | What the install adds |
+|------|---------|------------------------|
+| NVIDIA | CUDA | Nothing. CUDA comes with the driver, which Omarchy installs. |
+| AMD | OpenCL via ROCm | ROCm 7.1.1 from the Arch Linux Archive, held there by an `IgnorePkg` line in `/etc/pacman.conf`, plus `ocl-icd`, `rocminfo`, `rocm-smi-lib` and `clinfo`. |
+| Intel | OpenCL via NEO | `intel-compute-runtime`, `level-zero-loader`, `ocl-icd`, `vulkan-intel`, `intel-media-driver`, `clinfo`. |
+
+`bin/omarchy-resolve gpu` prints the whole picture as JSON — every card, which
+one was picked, its gfx target on AMD, and whether the compute stack behind it
+is ready. It changes nothing and needs no root, so it is the thing to run on a
+machine before trusting an install to it.
+
+### AMD: why the ROCm version is pinned
+
+ROCm 7.2.0 broke DaVinci Resolve on every AMD GPU — `clCreateContext` fails
+outright, or Resolve hangs on the Color page
+([ROCm#5982](https://github.com/ROCm/ROCm/issues/5982)). 7.1.1 is the last
+release confirmed working everywhere, so that is what gets installed, and an
+`IgnorePkg` line keeps a routine `pacman -Syu` from quietly undoing it weeks
+later. Uninstall lifts the hold again — and only the line this installer
+wrote, which it marks with a comment for exactly that reason.
+
+AMD did fix the launch crash in 7.2.1, and Arch has carried 7.2.4 since May
+2026. The pin stays the default anyway: Arch's own 7.2.2 build was still being
+reported broken after that fix, and nobody has retested 7.2.4 against Resolve.
+To try it yourself, remove the `IgnorePkg` line, `pacman -Syu`, and exercise
+the Color, Edit and Media pages plus a short render before believing it.
+
+The launcher pins OpenGL and Vulkan to the chosen card by PCI address —
+`DRI_PRIME=pci-0000_BB_DD_F`. It never uses `DRI_PRIME=1`, and neither should
+you: that means "the *other* card relative to Mesa's default", so on a machine
+whose monitor is already on the Radeon it flips OpenGL to the integrated GPU
+while OpenCL stays on the Radeon. CL/GL interop then fails and Resolve hangs on
+Color — the same symptom as the ROCm bug, from an unrelated cause.
+`switcherooctl` is avoided for the same reason: internally it is `DRI_PRIME=1`.
+
+### Intel: experimental
+
+Blackmagic does not support Intel GPUs on Linux. With `intel-compute-runtime`
+installed the Arc appears as an OpenCL device and editing, playback and
+transcode generally work, but the Neural Engine, some effects, Fairlight FX and
+noise reduction may fall back to the CPU or fail. The install sets it up
+properly and says so on the Install tab; it cannot make it supported.
+
+The launcher pins by PCI address through `ZE_AFFINITY_MASK` rather than a NEO
+device index, because NEO's numbering is not a function of PCI order. On a
+discrete Battlemage card it also sets `NEOReadDebugKeys=1` and
+`OverrideGpuAddressSpace=48`, which that silicon needs and the Panther Lake
+Xe3 iGPUs — confusingly sold under the same "Arc B-series" name — do not.
+
+### Overriding the choice
+
+Two environment variables, read by the launcher every time it runs:
+
+```bash
+RESOLVE_GPU_BDF=0000:03:00.0 davinci-resolve   # use this card, whatever the pick says
+RESOLVE_NO_PIN=1 davinci-resolve               # set no GPU variables at all
+```
+
+Set them permanently in an override file (below). `bin/omarchy-resolve gpu`
+lists the PCI addresses to choose from.
+
 ### Hybrid GPU laptops (Optimus)
 
-Do not edit `/usr/local/bin/resolve-nvidia-open` directly. Every install and
+An AMD or Intel pick is pinned to its PCI address automatically, so this
+section is about the NVIDIA case: a laptop that displays through its iGPU and
+wants Resolve on the NVIDIA card needs PRIME offload, which is not set by
+default because forcing it on a desktop whose monitor is already on the NVIDIA
+card makes things worse.
+
+Do not edit `/usr/local/bin/resolve-omarchy` directly. Every install and
 update writes that file from scratch, so changes made in it are reverted the
 next time you update Resolve — silently, and the machine quietly goes back to
 the wrong GPU. Put them in an override file instead. The wrapper sources these
@@ -294,12 +383,12 @@ systemctl --user restart wireplumber pipewire pipewire-pulse
 ### Resolve will not start
 
 ```bash
-setsid /usr/local/bin/resolve-nvidia-open >/tmp/resolve-stderr.log 2>&1 &
+setsid /usr/local/bin/resolve-omarchy >/tmp/resolve-stderr.log 2>&1 &
 bin/omarchy-resolve logs 200
 ```
 
 `Cannot open display` means the XWayland wrapper is being bypassed — launch via
-`resolve-nvidia-open`, not `/opt/resolve/bin/resolve`. "Single instance already
+`resolve-omarchy`, not `/opt/resolve/bin/resolve`. "Single instance already
 running" after a crash is a stale Qt lockfile; the wrapper clears those, so
 launching through it again is the fix.
 
@@ -347,11 +436,12 @@ RPATH pass skips files already correct.
 | `/opt/resolve/.omarchy-resolve.json` | Which version, from which ZIP, when |
 | `/opt/resolve/.license` | Studio activation — made writable, or Studio licensing fails |
 | `/opt/resolve/{Apple Immersive,Extras,Fairlight,logs}` | Directories Resolve creates at startup — made writable; denied `Apple Immersive` it will not launch at all |
-| `/usr/local/bin/resolve-nvidia-open` | XWayland wrapper (the real launcher) |
+| `/usr/local/bin/resolve-omarchy` | XWayland wrapper (the real launcher) |
 | `/usr/bin/davinci-resolve` | Convenience shim to the wrapper |
 | `/usr/share/applications/*.desktop`, `/usr/share/icons/hicolor/**` | Menu entries and icons |
 | `/usr/lib/udev/rules.d/99-*.rules` | Blackmagic panels, keyboards, capture cards |
 | `/etc/modules-load.d/snd-aloop.conf` | Loads the virtual audio card at boot |
+| `/etc/pacman.conf` | On AMD only: one `IgnorePkg` line holding ROCm at 7.1.1, marked with a comment so uninstall removes only ours |
 | `/etc/pki/tls` | Symlink to `/etc/ssl`, for Resolve's CentOS-path certificate lookup |
 | `~/.local/share/applications/davinci-resolve-wrapper.desktop` | User entry, outranks the system one |
 | `~/.config/pipewire/pipewire.conf.d/50-resolve-aloop-bridge.conf` | Monitor audio bridge |
@@ -429,8 +519,12 @@ To remove the plugin itself: `omarchy plugin remove nosignal.davinci-resolve`.
 
 The original terminal-only installer this grew out of lives at
 [DaVinci-Resolve-Omarchy](https://github.com/28allday/DaVinci-Resolve-Omarchy).
-There is an AMD sibling for RDNA 2/3/4 cards, which has its own ROCm pinning and
-`DRI_PRIME` handling.
+Its AMD and Intel siblings —
+[DaVinci-Resolve-AMD-Omarchy](https://github.com/28allday/DaVinci-Resolve-AMD-Omarchy)
+and `intel_resolve` — are where the ROCm pinning, the `DRI_PRIME` PCI-tag fix
+and the Arc handling were worked out. All three are now folded into this
+engine, so it is the one to use; they remain useful as the written record of
+why each of those decisions is what it is.
 
 DaVinci Resolve is a product of Blackmagic Design. This project is not
 affiliated with or endorsed by them.

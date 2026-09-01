@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "nosignal.davinci-resolve",
   "name": "DaVinci Resolve",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Gavin Nugent",
   "license": "MIT",
-  "description": "Install, repair and diagnose DaVinci Resolve on Omarchy (Arch + Hyprland + NVIDIA). Authenticates once through Omarchy's polkit agent, then streams the whole install into the panel. Includes the checks that matter when Resolve misbehaves: audio backend, snd-aloop, window rules, NVENC, and the ProRes RAW decoder trap. Ships AAC Fix, so AAC clips stop importing silent. Summon with: omarchy-shell shell toggle nosignal.davinci-resolve",
+  "description": "Install, repair and diagnose DaVinci Resolve on Omarchy (Arch + Hyprland). Detects the GPU and sets up the compute stack it needs — CUDA on NVIDIA, pinned ROCm on AMD, NEO on Intel. Authenticates once through Omarchy's polkit agent, then streams the whole install into the panel. Includes the checks that matter when Resolve misbehaves: audio backend, snd-aloop, window rules, the GPU pin and its OpenCL stack, and the ProRes RAW decoder trap. Ships AAC Fix, so AAC clips stop importing silent. Summon with: omarchy-shell shell toggle nosignal.davinci-resolve",
   "kinds": [
     "service",
     "panel",
