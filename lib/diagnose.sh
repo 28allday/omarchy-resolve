@@ -201,7 +201,15 @@ diag_aacfix() {
 # Resolve logs a handful of ERROR lines on every clean startup. Counting those
 # as problems trains you to ignore the count, so they are filtered out and only
 # the remainder is reported.
-BENIGN_LOG_ERRORS='unable to open default plug-in directory /usr/local/lib/proresraw/plugins|Error initializing ArriImageSdk|Failed to connect to panel socket|open /var/tmp/davinci_socket failed|RemoteStream\(\) - Access token is empty'
+# 'No Main Display GPU found' reads alarming but is an XWayland artifact: Resolve
+# cannot match a monitor to a GPU through Xwayland, so it falls back to the only
+# GPU it found — and the id it names is that GPU. The same log then shows
+# IsMainDisplayGPU=yes, 'Compute API set to automatic, defaulting to CUDA' and
+# CUDA initialising on the card, so nothing is actually wrong. Note that on a
+# hybrid machine where Resolve sees more than one GPU this line could mean it
+# picked the wrong one; the gpu and nvenc checks above report the card in use.
+# 'SkipVersion' is simply a key that does not exist until an update is dismissed.
+BENIGN_LOG_ERRORS='unable to open default plug-in directory /usr/local/lib/proresraw/plugins|Error initializing ArriImageSdk|Failed to connect to panel socket|open /var/tmp/davinci_socket failed|RemoteStream\(\) - Access token is empty|No Main Display GPU found and no monitors found to match|Failed to parse key \(SkipVersion\) from JsonObject'
 
 diag_logs() {
   if [[ ! -f "${DEBUG_LOG_DEFAULT}" ]]; then
