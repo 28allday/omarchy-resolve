@@ -32,7 +32,7 @@ user_desktop_entry() {
 [Desktop Entry]
 Type=Application
 Name=DaVinci Resolve
-Comment=DaVinci Resolve via XWayland wrapper (NVIDIA-Open)
+Comment=DaVinci Resolve via the Omarchy XWayland wrapper
 Exec=${RESOLVE_WRAPPER} %U
 TryExec=${RESOLVE_WRAPPER}
 Terminal=false

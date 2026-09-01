@@ -44,6 +44,14 @@ root_install_packages() {
   # nothing under /opt/resolve references, linked or dlopened.
   local packages=(unzip patchelf libarchive xdg-user-dirs desktop-file-utils file
                   gtk-update-icon-cache rsync libxcrypt-compat ffmpeg glu fuse2)
+  # Whatever the detected card needs to be a compute device. Empty on NVIDIA —
+  # CUDA arrives with the driver, which Omarchy owns. See gpu_stack_packages()
+  # in lib/check.sh, which must list the same names so the panel's "missing
+  # packages" line agrees with what this actually installs.
+  local pkg_line
+  while IFS= read -r pkg_line; do
+    [[ -n "${pkg_line}" ]] && packages+=("${pkg_line}")
+  done < <(gpu_stack_packages "${COMPUTE_VENDOR}")
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "   would install (one at a time): ${packages[*]}"
     step_skip "dry run"
@@ -60,6 +68,176 @@ root_install_packages() {
     step_ok "Dependencies installed"
   fi
   emit_progress 10
+}
+
+# ------------------------------------------------------------- compute stack
+# Resolve does every frame of its work on the GPU. On NVIDIA that is CUDA and
+# it comes with the driver, so there is nothing to do. On AMD and Intel it is
+# OpenCL, supplied by a runtime that is not installed on a stock Arch desktop —
+# and without it Resolve does not degrade, it dies on first launch with
+#
+#   Unsupported GPU Processing Mode
+#
+# and no hint as to what is missing. That single omission is why this installer
+# only ever worked on NVIDIA machines.
+
+# ROCm 7.1.1 from the Arch Linux Archive, pinned in pacman.conf.
+#
+# ROCm 7.2.0 broke Resolve on every AMD GPU — clCreateContext fails outright or
+# hangs on the Color page (ROCm/ROCm#5982). 7.1.1 was the last release that
+# worked everywhere, and it is what the sibling AMD installer has been shipping
+# against an RX 9060 XT, a 7800 XT and a 760M.
+#
+# AMD did fix the launch crash in 7.2.1, and Arch has carried 7.2.4 since
+# 2026-05-31 — but Arch's own 7.2.2 build was still reported broken after that
+# fix, and nobody has retested 7.2.4 on gfx1200. The pin stays the default
+# until someone does; NOTES.md carries the reasoning and the reversible
+# re-test procedure. Do not wait for a "7.3": AMD's numbering went 7.2.4 →
+# 7.14.0, and 7.14 has OpenCL problems of its own.
+#
+# opencl-amd (AUR) is deliberately not used: it bundles its own ROCm and
+# conflicts with rocm-opencl-runtime, so it is one or the other.
+root_install_rocm() {
+  step rocm "Installing pinned ROCm ${ROCM_PIN_VERSION} for AMD…"
+
+  local state; state="$(rocm_pin_state)"
+  if [[ "${state%%|*}" == "ok" ]] && pacman -Q spirv-llvm-translator 2>/dev/null | grep -q "${SPIRV_PIN_VERSION}"; then
+    step_skip "ROCm ${ROCM_PIN_VERSION} already installed at the pinned versions"
+    root_pin_rocm
+    return 0
+  fi
+
+  local ala="https://archive.archlinux.org/packages"
+  local urls=(
+    "${ala}/r/rocm-core/rocm-core-${ROCM_PIN_VERSION}-1-x86_64.pkg.tar.zst"
+    "${ala}/r/rocm-device-libs/rocm-device-libs-2:${ROCM_PIN_VERSION}-1-x86_64.pkg.tar.zst"
+    "${ala}/r/rocm-llvm/rocm-llvm-2:${ROCM_PIN_VERSION}-1-x86_64.pkg.tar.zst"
+    "${ala}/r/rocm-opencl-runtime/rocm-opencl-runtime-${ROCM_PIN_VERSION}-1-x86_64.pkg.tar.zst"
+    "${ala}/c/comgr/comgr-2:${ROCM_PIN_VERSION}-1-x86_64.pkg.tar.zst"
+    "${ala}/s/spirv-llvm-translator/spirv-llvm-translator-${SPIRV_PIN_VERSION}-1-x86_64.pkg.tar.zst"
+  )
+
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "   would remove opencl-amd if present (it conflicts with rocm-opencl-runtime)"
+    echo "   would download ${#urls[@]} packages from the Arch Linux Archive:"
+    local u; for u in "${urls[@]}"; do echo "     $(basename "${u}")"; done
+    echo "   would install them with pacman -U, then pin them in ${PACMAN_CONF}"
+    step_skip "dry run"
+    emit_progress 8
+    return 0
+  fi
+
+  # opencl-amd carries its own ROCm and conflicts with rocm-opencl-runtime, so
+  # pacman -U would refuse the whole transaction while it is installed.
+  local conflict
+  for conflict in opencl-amd opencl-amd-debug; do
+    if pacman -Q "${conflict}" >/dev/null 2>&1; then
+      log "  Removing ${conflict} (conflicts with rocm-opencl-runtime)"
+      pacman -Rns --noconfirm "${conflict}" >/dev/null 2>&1 || \
+        step_warn "Could not remove ${conflict} — the ROCm install may fail"
+    fi
+  done
+
+  local tmp; tmp="$(mktemp -d -t omarchy-resolve-rocm-XXXXXX)"
+  local files=() url fname
+  for url in "${urls[@]}"; do
+    fname="$(basename "${url}")"
+    log "  ${fname}"
+    if curl -fsSL --output "${tmp}/${fname}" "${url}"; then
+      files+=("${tmp}/${fname}")
+    else
+      rm -rf "${tmp}"
+      step_fail "Could not download ${fname} from the Arch Linux Archive — check the network, then re-run"
+    fi
+  done
+
+  # Runtime dependencies of the ROCm packages, normally already present.
+  pacman -S --needed --noconfirm numactl gflags >/dev/null 2>&1 || true
+
+  if ! pacman -U --noconfirm "${files[@]}" >/dev/null 2>&1; then
+    rm -rf "${tmp}"
+    step_fail "pacman refused the pinned ROCm packages — stopping before the launcher is written against a broken stack"
+  fi
+  rm -rf "${tmp}"
+
+  root_pin_rocm
+  step_ok "ROCm ${ROCM_PIN_VERSION} installed"
+  emit_progress 8
+}
+
+# Hold the stack there. Without this the next routine `pacman -Syu` pulls ROCm
+# forward and Resolve stops launching, with nothing to connect the two events.
+# The marker comment is what lets uninstall tell our line from one the user
+# wrote, and remove only ours.
+root_pin_rocm() {
+  if grep -qE '^IgnorePkg.*rocm-core' "${PACMAN_CONF}" 2>/dev/null; then
+    log "  ROCm is already pinned in ${PACMAN_CONF}"
+    return 0
+  fi
+  local pins="${ROCM_PIN_PACKAGES[*]} spirv-llvm-translator"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "   would add to ${PACMAN_CONF} [options]: IgnorePkg = ${pins}"
+    return 0
+  fi
+  # pacman merges repeated IgnorePkg directives, so appending a line of our own
+  # is safe even when the user already has one.
+  sed -i "/^\[options\]/a ${ROCM_PIN_MARKER}\nIgnorePkg = ${pins}" "${PACMAN_CONF}"
+  log "  Pinned ROCm in ${PACMAN_CONF} — 'pacman -Syu' will now leave it alone"
+}
+
+# Intel's runtime comes from the repos, so there is no archive dance — but it
+# is worth confirming it actually landed. A missing NEO is the difference
+# between Resolve running and Resolve refusing to start, and pacman failing on
+# one package out of six is easy to miss in a scrolling log.
+root_verify_intel_stack() {
+  step intelstack "Checking the Intel compute runtime…"
+  if [[ "${DRY_RUN}" == "1" ]]; then step_skip "dry run"; return 0; fi
+  local pkg missing=()
+  for pkg in intel-compute-runtime level-zero-loader ocl-icd; do
+    pacman -Qq "${pkg}" >/dev/null 2>&1 || missing+=("${pkg}")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    step_fail "Missing Intel compute packages: ${missing[*]} — Resolve would start and immediately fail with Unsupported GPU Processing Mode"
+  fi
+  step_ok "Intel NEO OpenCL present"
+}
+
+root_install_gpu_stack() {
+  case "${COMPUTE_VENDOR}" in
+    amd)    root_install_rocm ;;
+    intel)  root_verify_intel_stack ;;
+    nvidia)
+      step cuda "Checking the NVIDIA compute stack…"
+      if command -v nvidia-smi >/dev/null 2>&1; then
+        step_ok "CUDA available through the installed NVIDIA driver"
+      else
+        step_warn "No nvidia-smi — install the NVIDIA driver, or Resolve will have nothing to compute on"
+      fi ;;
+    *)
+      step gpustack "Checking the GPU compute stack…"
+      step_warn "No supported GPU detected — Resolve needs an NVIDIA, AMD or Intel card" ;;
+  esac
+}
+
+# Resolve's Blackmagic RAW decoders ship an OpenCL variant that fights the ROCm
+# context Resolve itself is holding: BRAW clips stall or the Color page hangs.
+# davincibox has moved these aside on AMD for years and it remains the standard
+# fix. Renamed rather than deleted, so it is one mv to put back, and only done
+# on AMD — on NVIDIA the same decoders are fine and faster than the CPU path.
+root_disable_braw_opencl() {
+  [[ "${COMPUTE_VENDOR}" == "amd" ]] || return 0
+  step braw "Moving the BlackmagicRAW OpenCL decoders aside (AMD)…"
+  local d moved=0
+  for d in "${RESOLVE_PREFIX}/BlackmagicRAWPlayer/BlackmagicRawAPI/libDecoderOpenCL.so" \
+           "${RESOLVE_PREFIX}/BlackmagicRAWSpeedTest/BlackmagicRawAPI/libDecoderOpenCL.so" \
+           "${RESOLVE_PREFIX}/libs/BlackmagicRawAPI/libDecoderOpenCL.so"; do
+    if [[ -f "${d}" && ! -f "${d}.bak" ]]; then
+      run mv "${d}" "${d}.bak"
+      moved=$((moved + 1))
+    fi
+  done
+  if (( moved > 0 )); then step_ok "Disabled ${moved} decoder(s) — restore with mv <file>.bak <file>"
+  else step_skip "Nothing to disable"; fi
 }
 
 # Resolve's extras downloader looks for TLS certificates at the Red Hat path
@@ -399,15 +577,30 @@ root_desktop_integration() {
 # ------------------------------------------------------------------- launchers
 # Resolve has no native Wayland support, so everything goes through a wrapper
 # that forces XWayland and clears the Qt single-instance lockfiles a crash
-# leaves behind.
+# leaves behind. It also carries the GPU environment, which is the part that
+# differs per vendor and the part that decides whether Resolve computes at all.
+#
+# The wrapper picks its GPU at RUN time, not install time, using the same
+# lib/gpu.sh embedded verbatim below. That is deliberate: a launcher with the
+# card baked in goes quietly wrong the moment a GPU is added, removed or
+# re-seated, and "the installer said 9060 XT but the launcher pinned the iGPU"
+# is a failure nobody can see from the outside.
 root_install_wrapper() {
   step wrapper "Installing XWayland wrapper…"
   if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "   would write ${RESOLVE_WRAPPER}, embedding the GPU picker"
+    echo "   would pin: ${COMPUTE_VENDOR} at ${COMPUTE_BDF:-<none>}${COMPUTE_GFX:+ (${COMPUTE_GFX})}"
     step_skip "dry run"; emit_progress 95; return 0
   fi
-  cat > "${RESOLVE_WRAPPER}" <<'WRAPPER'
+
+  {
+    cat <<'HEAD'
 #!/usr/bin/env bash
 set -euo pipefail
+# DaVinci Resolve launcher — written by omarchy-resolve. Rewritten from
+# scratch by every install and update, so edits here do not survive one; put
+# local changes in an override file instead (see the end of this script).
+
 # Clear stale single-instance Qt lockfiles (only if we have permission)
 if [[ -r /tmp ]]; then
   for lockfile in /tmp/qtsingleapp-DaVinci*lockfile; do
@@ -430,9 +623,79 @@ export QT_AUTO_SCREEN_SCALE_FACTOR=1
 # globally (Omarchy 4 envs.lua). Resolve's bundled Qt has neither plugin —
 # harmless, but unset them so startup stays free of Qt style warnings.
 unset QT_STYLE_OVERRIDE QT_QPA_PLATFORMTHEME
-# Local overrides. This file is rewritten from scratch by every install and
-# update, so edits made here do not survive one — put them in an override file
-# instead. Hybrid laptops forcing the dGPU want:
+# Large projects open a lot of media files at once.
+ulimit -n 65535 2>/dev/null || true
+
+# ---------------------------------------------------------------- GPU picker
+# Embedded verbatim from lib/gpu.sh so this launcher and the installer can
+# never disagree about which card Resolve should use.
+HEAD
+
+    # The picker itself, minus its shebang.
+    tail -n +2 "${ENGINE_LIB_DIR}/gpu.sh"
+
+    cat <<'TAIL'
+
+# ------------------------------------------------------------ GPU environment
+# RESOLVE_NO_PIN=1 turns all of this off; RESOLVE_GPU_BDF=0000:XX:YY.Z picks a
+# specific card. Both are read by the picker above.
+if [[ "${RESOLVE_NO_PIN:-0}" != "1" ]] && read -r RESOLVE_VENDOR RESOLVE_BDF RESOLVE_GFX < <(resolve_gpu_pick); then
+  case "${RESOLVE_VENDOR}" in
+    nvidia)
+      # CUDA finds the card on its own, and forcing PRIME offload on a desktop
+      # whose monitor is already on the NVIDIA card makes things worse, not
+      # better. Hybrid laptops that display through the iGPU do want it — that
+      # is what the override file at the bottom is for.
+      : ;;
+    amd)
+      # Pin OpenGL and Vulkan to this exact card by PCI address.
+      #
+      # DRI_PRIME=1 is NOT used and must not be: it means "the OTHER card
+      # relative to Mesa's default", so on a machine whose monitor is already
+      # on the Radeon it flips OpenGL to the iGPU while OpenCL stays on the
+      # Radeon. CL/GL interop (clCreateContext with CL_GL_CONTEXT_KHR) then
+      # fails and Resolve hangs on the Color page with
+      #   OpenCL Context Manager failed to create context
+      # switcherooctl is skipped for the same reason — internally it is
+      # DRI_PRIME=1 and inherits the bug. The explicit pci- tag always lands
+      # on the intended card whatever the enumeration order.
+      export DRI_PRIME="$(resolve_pci_tag "${RESOLVE_BDF}")"
+      export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1
+      export MESA_VK_DEVICE_SELECT="$(resolve_pci_tag "${RESOLVE_BDF}")"
+      export ROCM_PATH=/opt/rocm
+      export LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/lib64:${LD_LIBRARY_PATH:-}"
+      export OCL_ICD_VENDORS="${OCL_ICD_VENDORS:-/etc/OpenCL/vendors}"
+      export ROCR_VISIBLE_DEVICES=0
+      # Set even for targets ROCm supports natively: on RDNA4 + ROCm 7.1.1,
+      # Resolve's clCreateContext needs it present regardless.
+      if [[ -n "${RESOLVE_GFX}" ]]; then
+        hsa="$(resolve_hsa_override "${RESOLVE_GFX}")"
+        [[ -n "${hsa}" ]] && export HSA_OVERRIDE_GFX_VERSION="${hsa}"
+      fi
+      ;;
+    intel)
+      # NEO matches ZE_AFFINITY_MASK against the real device, so the BDF form
+      # is used rather than an index — NEO's numeric order is not a function
+      # of PCI order, and on hybrid machines it often enumerates the discrete
+      # card first anyway.
+      export ZE_AFFINITY_MASK="${RESOLVE_BDF}"
+      export OCL_ICD_VENDORS="${OCL_ICD_VENDORS:-/etc/OpenCL/vendors}"
+      export LIBVA_DRIVER_NAME=iHD
+      # OpenCL init workaround for discrete Battlemage Xe2 silicon only. Intel
+      # reuses the "Arc B-series" brand for the Xe3-LPG iGPUs in Panther Lake
+      # (B360/B370/B380/B390), which neither need nor want this debug key —
+      # hence the check that the card is not on the SoC bus.
+      if [[ ! "${RESOLVE_BDF}" =~ ^0000:00: ]] &&
+         lspci -nn 2>/dev/null | grep -qi 'Battlemage'; then
+        export NEOReadDebugKeys=1
+        export OverrideGpuAddressSpace=48
+      fi
+      ;;
+  esac
+fi
+
+# Local overrides, read last so they win. Hybrid laptops that display through
+# an iGPU and want the NVIDIA card want:
 #   export __NV_PRIME_RENDER_OFFLOAD=1
 #   export __GLX_VENDOR_LIBRARY_NAME=nvidia
 for override in /etc/omarchy-resolve/wrapper.env \
@@ -443,12 +706,26 @@ for override in /etc/omarchy-resolve/wrapper.env \
   fi
 done
 exec /opt/resolve/bin/resolve "$@"
-WRAPPER
+TAIL
+  } > "${RESOLVE_WRAPPER}"
   chmod +x "${RESOLVE_WRAPPER}"
 
-  if [[ ! -e "${RESOLVE_SHIM}" ]]; then
+  # An install predating the rename left a wrapper under the old NVIDIA-only
+  # name. Two launchers, one of them stale, is worse than none.
+  if [[ -e "${RESOLVE_WRAPPER_LEGACY}" ]]; then
+    rm -f "${RESOLVE_WRAPPER_LEGACY}"
+    log "  Removed the old ${RESOLVE_WRAPPER_LEGACY}"
+  fi
+
+  # Write the shim when there is none, and repoint one that is ours — an
+  # install predating the rename left it aimed at a wrapper that no longer
+  # exists. A shim someone else wrote is left exactly as it is.
+  if [[ ! -e "${RESOLVE_SHIM}" ]] ||
+     grep -qE "${RESOLVE_WRAPPER}|${RESOLVE_WRAPPER_LEGACY}" "${RESOLVE_SHIM}" 2>/dev/null; then
     printf '#!/usr/bin/env bash\nexec %s "$@"\n' "${RESOLVE_WRAPPER}" > "${RESOLVE_SHIM}"
     chmod +x "${RESOLVE_SHIM}"
+  else
+    warn "  Left ${RESOLVE_SHIM} alone — it is not ours"
   fi
 
   # Point the system .desktop files at the wrapper so XWayland applies however
@@ -459,7 +736,7 @@ WRAPPER
     [[ -f "${d}" ]] && sed -i "s|^Exec=.*|Exec=${RESOLVE_WRAPPER} %U|" "${d}"
   done
   update-desktop-database >/dev/null 2>&1 || true
-  step_ok
+  step_ok "Wrapper installed for ${COMPUTE_VENDOR}${COMPUTE_GFX:+ (${COMPUTE_GFX})}"
   emit_progress 95
 }
 
@@ -514,12 +791,19 @@ root_write_stamp() {
   base="$(basename "${INSTALL_ZIP}")"
   version="${base#DaVinci_Resolve_}"; version="${version#Studio_}"; version="${version%_Linux.zip}"
   edition="Free"; [[ "${base}" == *_Studio_* ]] && edition="Studio"
+  # The GPU is recorded because the install is shaped by it — packages,
+  # compute stack, BRAW decoders, launcher environment. Diagnose reads it back
+  # to spot a machine whose card has changed since, which otherwise presents
+  # as Resolve mysteriously refusing to start.
   cat > "${RESOLVE_STAMP}" <<STAMP
 {
   "version": "$(json_escape "${version}")",
   "edition": "$(json_escape "${edition}")",
   "zip": "$(json_escape "${base}")",
   "installed": "$(date -Iseconds)",
+  "computeVendor": "$(json_escape "${COMPUTE_VENDOR}")",
+  "computeBdf": "$(json_escape "${COMPUTE_BDF}")",
+  "computeGfx": "$(json_escape "${COMPUTE_GFX}")",
   "engineVersion": "$(json_escape "${ENGINE_VERSION}")"
 }
 STAMP
@@ -548,15 +832,27 @@ do_install_root() {
   [[ -n "${INSTALL_ZIP}" ]] || { install_root_usage; err "--zip is required"; }
   [[ -f "${INSTALL_ZIP}" ]] || err "No such ZIP: ${INSTALL_ZIP}"
 
+  # Decided once, up front: which card Resolve will compute on drives the
+  # package list, the compute stack, the BRAW decoders and the launcher.
+  resolve_compute_target || true
   emit_phase root "Installing DaVinci Resolve"
   log "Using installer ZIP: ${INSTALL_ZIP}"
+  if [[ -n "${COMPUTE_BDF}" ]]; then
+    log "Compute GPU: $(gpu_name_at "${COMPUTE_BDF}") at ${COMPUTE_BDF} (${COMPUTE_VENDOR}${COMPUTE_GFX:+, ${COMPUTE_GFX}})"
+    emit_field computeVendor "${COMPUTE_VENDOR}"
+    emit_field computeName "$(gpu_name_at "${COMPUTE_BDF}")"
+  else
+    warn "No GPU detected — Resolve will not run on this machine"
+  fi
   emit_progress 0
 
   root_install_packages
+  root_install_gpu_stack
   root_link_certs
   root_extract
   root_fix_libs
   root_install_tree
+  root_disable_braw_opencl
   root_patch_rpath
   root_fix_libcrypt
   root_desktop_integration
