@@ -118,24 +118,36 @@ into `/root`, so the engine refuses to do it.
 3. **Swaps glib for the system copies** (`libglib-2.0`, `libgio-2.0`,
    `libgmodule-2.0`) and **keeps the bundled `libc++`/`libc++abi`** — Resolve is
    compiled against a specific C++ ABI and replacing those crashes it on
-   startup.
+   startup. The control-surface tarball unpacked in this step carries its own,
+   older `libc++`, so it may only add libraries `libs/` does not already have;
+   anything already there is Resolve's and wins.
 4. **Repoints every RPATH** in the tree at `/opt/resolve`, including the ~200 MB
    Qt WebEngine library, which cannot be skipped for size because it links to
    other Resolve libraries. This is the slow part.
 5. **Symlinks legacy `libcrypt.so.1`**, which Arch replaced with `.so.2`.
 6. **Installs an XWayland wrapper** at `/usr/local/bin/resolve-nvidia-open`:
    Resolve has no native Wayland support, so it forces `QT_QPA_PLATFORM=xcb`,
-   clears the Qt single-instance lockfiles a crash leaves behind, and unsets the
+   clears the Qt single-instance lockfiles a crash leaves behind, unsets the
    Kvantum/GTK Qt theme variables Omarchy sets globally (Resolve's bundled Qt
-   has neither plugin).
-7. **Makes `/opt/resolve/.license` writable** so Resolve Studio can store its
-   activation. See [Studio licensing](#studio-licensing).
-8. **Switches the audio backend from DeckLink to ALSA** — Resolve's shipped
+   has neither plugin), and runs Resolve from `/opt/resolve` so its rolling log
+   lands in the install tree instead of wherever the launcher happened to be.
+7. **Makes the directories Resolve writes into inside the prefix writable.**
+   Most of its support directories live under `~/.local/share/DaVinciResolve`
+   and it creates those itself; a handful land in the root-owned install tree
+   instead — `.license` for [Studio activation](#studio-licensing), plus
+   `Apple Immersive`, `Extras`, `Fairlight` and `logs`. Resolve creates each at
+   startup, and treats being denied `Apple Immersive` as fatal.
+8. **Substitutes `RESOLVE_INSTALL_LOCATION`** in the four `.desktop` files
+   Blackmagic ships. Their own installer does this; ours installs from the
+   extracted AppImage, where nothing did. A `Path=` that does not resolve is
+   fatal rather than cosmetic — the launcher refuses to start the application
+   at all.
+9. **Switches the audio backend from DeckLink to ALSA** — Resolve's shipped
    default aborts on first launch on any machine without a Blackmagic card.
-9. **Sets up `snd-aloop`** and bridges it to your real output. See below.
-10. **Installs Hyprland window rules** — only on an Omarchy old enough to need
+10. **Sets up `snd-aloop`** and bridges it to your real output. See below.
+11. **Installs Hyprland window rules** — only on an Omarchy old enough to need
     them; current versions ship these fixes themselves.
-11. **Installs AAC Fix** — Resolve on Linux cannot decode AAC, so the install
+12. **Installs AAC Fix** — Resolve on Linux cannot decode AAC, so the install
     ends by putting the [AAC Fix](#a-clip-imports-with-picture-but-no-sound)
     script in Resolve's Scripts menu and a `resolve-aac-fix` command in
     `~/.local/bin`. Runs last, once Resolve's user folder exists.
@@ -165,7 +177,7 @@ audio interface Resolve is happy with.
 
 | Option | Panel toggle | Engine flag |
 |--------|--------------|-------------|
-| Full system upgrade first | Full system upgrade first | `--full-upgrade` |
+| Full system upgrade first | — | `--full-upgrade` |
 | Skip the snd-aloop audio fix | Set up snd-aloop (off) | `--no-aloop` |
 | Leave Hyprland alone | Manage Hyprland window rules (off) | `--no-hypr-rules` |
 | Do not install AAC Fix | Install AAC Fix (off) | `--no-aac-fix` |
@@ -280,6 +292,32 @@ bin/omarchy-resolve logs 200
 running" after a crash is a stale Qt lockfile; the wrapper clears those, so
 launching through it again is the fix.
 
+Two failures look identical from the app menu — no window, no error, nothing in
+`ResolveDebug.txt`, because Resolve dies before the log is opened. Both were
+bugs in this installer, fixed in current versions; if you are on an install made
+by an older one, run the install again to repair it.
+
+```
+symbol lookup error: /opt/resolve/bin/resolve:
+undefined symbol: _ZNSt3__117bad_function_callD1Ev
+```
+
+The control-surface tarball's older `libc++` was unpacked over Resolve's own.
+`/opt/resolve/libs/libc++.so.1` should be a symlink to `libc++.so.1.0`; if it is
+a regular file, that is the fault.
+
+```
+Failed to create application support directories
+```
+
+Resolve could not create one of the directories it wants inside `/opt/resolve`
+— it makes them `0777` at startup, and the install tree is root-owned. Resolve
+names the directory in its own log:
+
+```bash
+grep "mkdir failed for directory" ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
+```
+
 ### The bar covers Resolve's menu bar, or a dialog traps the pointer
 
 Current Omarchy fixes both itself. On an older one, the engine installs the
@@ -297,6 +335,7 @@ RPATH pass skips files already correct.
 | `/opt/resolve` | The application |
 | `/opt/resolve/.omarchy-resolve.json` | Which version, from which ZIP, when |
 | `/opt/resolve/.license` | Studio activation — made writable, or Studio licensing fails |
+| `/opt/resolve/{Apple Immersive,Extras,Fairlight,logs}` | Directories Resolve creates at startup — made writable; denied `Apple Immersive` it will not launch at all |
 | `/usr/local/bin/resolve-nvidia-open` | XWayland wrapper (the real launcher) |
 | `/usr/bin/davinci-resolve` | Convenience shim to the wrapper |
 | `/usr/share/applications/*.desktop`, `/usr/share/icons/hicolor/**` | Menu entries and icons |
