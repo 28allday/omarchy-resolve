@@ -68,27 +68,33 @@ run() {
 }
 
 # --------------------------------------------------------------------- GPUs
-# Every display-class PCI device, one per line as "vendor|name". lspci sees the
-# hardware whether or not a driver is loaded, which is what makes "card present
-# but driver missing" tellable from "no such card" — nvidia-smi cannot, since
-# it is absent in both cases. Hybrid machines really do have two: this is
-# written on a Ryzen laptop that reports an RTX 5060 Ti and a Raphael iGPU.
+# Identity, classification and the pick live in lib/gpu.sh — one definition,
+# shared with the launcher wrapper, which embeds that file verbatim. Sourced
+# here so check, install and diagnose all answer "which card?" identically.
+# ENGINE_LIB_DIR is how install-root.sh finds gpu.sh again when it embeds it
+# into the wrapper; resolved here because BASH_SOURCE only names this file
+# while this file is being sourced.
+ENGINE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/gpu.sh
+source "${ENGINE_LIB_DIR}/gpu.sh"
+
+# Every GPU as "vendor|name", the shape the helpers below want. Reads sysfs
+# through resolve_gpu_entries(), so "card present but driver missing" stays
+# tellable from "no such card" — nvidia-smi cannot tell those apart, since it
+# is absent in both cases. Hybrid machines really do have two: this is written
+# on a desktop that reports an RTX 5060 Ti and a Raphael iGPU.
 detect_gpus() {
-  command -v lspci >/dev/null 2>&1 || return 0
-  lspci -mm 2>/dev/null | awk -F'"' '
-    $2 ~ /^(VGA compatible controller|3D controller|Display controller)$/ {
-      vendor = $4; name = $6; v = "other"
-      if (vendor ~ /NVIDIA/)                              v = "nvidia"
-      else if (vendor ~ /Advanced Micro Devices|AMD|ATI/) v = "amd"
-      else if (vendor ~ /Intel/)                          v = "intel"
-      print v "|" name
-    }'
+  local vendor bdf driver name
+  while IFS='|' read -r vendor bdf driver name; do
+    [[ -n "${vendor}" ]] || continue
+    printf '%s|%s\n' "${vendor}" "${name}"
+  done < <(resolve_gpu_entries || true)
 }
 
 # Comma-separated names of every GPU whose vendor matches $1, or all of them
 # when $1 is empty. Empty output means none matched.
 gpu_names() {
-  local want="${1:-}" line vendor name out=""
+  local want="${1:-}" vendor name out=""
   while IFS='|' read -r vendor name; do
     [[ -n "${vendor}" ]] || continue
     [[ -z "${want}" || "${vendor}" == "${want}" ]] || continue
@@ -113,6 +119,37 @@ has_gpu_vendor() {
   while IFS='|' read -r vendor name; do
     [[ "${vendor}" == "${want}" ]] && return 0
   done < <(detect_gpus)
+  return 1
+}
+
+# The card Resolve will compute on, as three globals the callers all want
+# together. Cheap enough to call more than once, but every caller here needs
+# all three, so they are set in one go.
+#   COMPUTE_VENDOR  nvidia | amd | intel | other | none
+#   COMPUTE_BDF     PCI address of that card, empty when there is none
+#   COMPUTE_GFX     AMD gfx target when applicable, else empty
+# shellcheck disable=SC2034  # read by the sibling lib/*.sh, not by this file
+COMPUTE_VENDOR="" COMPUTE_BDF="" COMPUTE_GFX=""
+resolve_compute_target() {
+  local pick
+  pick="$(resolve_gpu_pick 2>/dev/null || true)"
+  if [[ -z "${pick}" ]]; then
+    COMPUTE_VENDOR="none"; COMPUTE_BDF=""; COMPUTE_GFX=""
+    return 1
+  fi
+  # shellcheck disable=SC2034  # all three are read by the sibling lib/*.sh
+  read -r COMPUTE_VENDOR COMPUTE_BDF COMPUTE_GFX <<< "${pick}"
+  COMPUTE_GFX="${COMPUTE_GFX:-}"
+  return 0
+}
+
+# Human name of the card at a PCI address.
+gpu_name_at() {
+  local want="$1" vendor bdf driver name
+  while IFS='|' read -r vendor bdf driver name; do
+    [[ "${bdf}" == "${want}" ]] || continue
+    printf '%s' "${name}"; return 0
+  done < <(resolve_gpu_entries || true)
   return 1
 }
 
@@ -155,9 +192,28 @@ json_bool() { local v=false; [[ "$2" == "1" || "$2" == "true" ]] && v=true; prin
 # shellcheck disable=SC2034
 {
   RESOLVE_PREFIX="/opt/resolve"
-  RESOLVE_WRAPPER="/usr/local/bin/resolve-nvidia-open"
+  RESOLVE_WRAPPER="/usr/local/bin/resolve-omarchy"
+  # The wrapper used to be named for the only GPU this installer handled. It
+  # now handles three, so the name moved — but an install made before that is
+  # still out there with the old one, and uninstall has to be able to find it.
+  RESOLVE_WRAPPER_LEGACY="/usr/local/bin/resolve-nvidia-open"
   RESOLVE_SHIM="/usr/bin/davinci-resolve"
   RESOLVE_STAMP="/opt/resolve/.omarchy-resolve.json"
+  RESOLVE_ENV_DIR="/etc/omarchy-resolve"
   ALOOP_CONF="/etc/modules-load.d/snd-aloop.conf"
-  ENGINE_VERSION="0.2.0"
+
+  # The AMD compute stack, pinned. ROCm 7.2.0 broke Resolve on every AMD GPU
+  # (clCreateContext fails outright, or hangs on the Color page); 7.1.1 is the
+  # last release confirmed working everywhere, and all six packages are still
+  # live on the Arch Linux Archive. See the ROCm section of NOTES.md for why
+  # the pin is still the default even though AMD fixed the crash in 7.2.1.
+  ROCM_PIN_VERSION="7.1.1"
+  ROCM_PIN_PACKAGES=(rocm-core rocm-device-libs rocm-llvm rocm-opencl-runtime comgr)
+  SPIRV_PIN_VERSION="21.1.3"
+  PACMAN_CONF="/etc/pacman.conf"
+  # Marker written above the IgnorePkg line we add, so uninstall can tell our
+  # pin from one the user put there themselves and only remove ours.
+  ROCM_PIN_MARKER="# omarchy-resolve: ROCm pinned for DaVinci Resolve"
+
+  ENGINE_VERSION="0.3.0"
 }
