@@ -118,18 +118,28 @@ do_check() {
   local update=0
   [[ "${relation}" == "newer" ]] && update=1
 
-  local gpu="unknown" driver=""
+  # `gpu` stays a single vendor because the panel gates on it
+  # (Service.qml: hasNvidia). `gpus` carries the whole picture, which on a
+  # hybrid machine is more than one card — the old code stopped at the first
+  # match and never mentioned the second.
+  local gpu="unknown" driver="" gpus_json="[]"
   if command -v nvidia-smi >/dev/null 2>&1; then
     driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || true)"
-    [[ -n "${driver}" ]] && gpu="nvidia"
   fi
-  if [[ "${gpu}" == "unknown" ]] && command -v lspci >/dev/null 2>&1; then
-    if lspci 2>/dev/null | grep -iE 'VGA|3D controller' >/dev/null; then
-      lspci 2>/dev/null | grep -i nvidia >/dev/null && gpu="nvidia"
-      [[ "${gpu}" == "unknown" ]] && lspci 2>/dev/null | grep -iE 'amd/ati|advanced micro' >/dev/null && gpu="amd"
-      [[ "${gpu}" == "unknown" ]] && lspci 2>/dev/null | grep -i 'intel' >/dev/null && gpu="intel"
-    fi
+  local vendor name first=1
+  while IFS='|' read -r vendor name; do
+    [[ -n "${vendor}" ]] || continue
+    if [[ ${first} -eq 1 ]]; then gpus_json="["; first=0; else gpus_json+=","; fi
+    gpus_json+="{$(json_str vendor "${vendor}"),$(json_str name "${name}")}"
+  done < <(detect_gpus)
+  [[ ${first} -eq 1 ]] || gpus_json+="]"
+  # Preference order matches what Resolve can actually use.
+  if has_gpu_vendor nvidia;  then gpu="nvidia"
+  elif has_gpu_vendor amd;   then gpu="amd"
+  elif has_gpu_vendor intel; then gpu="intel"
   fi
+  # nvidia-smi answering is proof enough on its own, even if lspci is absent.
+  [[ -n "${driver}" ]] && gpu="nvidia"
 
   local missing; missing="$(missing_packages | grep -v '^$' || true)"
   local missing_json="[]" first=1
@@ -185,6 +195,7 @@ do_check() {
   printf '%s,' "$(json_str docsVersion "${docs_ver}")"
   printf '%s,' "$(json_str gpu "${gpu}")"
   printf '%s,' "$(json_str driverVersion "${driver}")"
+  printf '%s,' "$(json_raw gpus "${gpus_json}")"
   printf '%s,' "$(json_bool wrapper "$([[ -x ${RESOLVE_WRAPPER} ]] && echo 1 || echo 0)")"
   printf '%s'  "$(json_raw missingPackages "${missing_json}")"
   printf '}\n'

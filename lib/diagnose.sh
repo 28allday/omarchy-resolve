@@ -142,20 +142,39 @@ diag_license() {
 }
 
 diag_gpu() {
+  # "nvidia-smi not found" was the whole diagnosis before, which reads the same
+  # on a machine with no NVIDIA card and on one whose driver simply is not
+  # installed — opposite problems, opposite fixes. lspci separates them, and
+  # names the other cards present rather than pretending they are not there.
+  local others; others="$(gpu_names_other_than nvidia)"
   if command -v nvidia-smi >/dev/null 2>&1; then
-    local driver name
+    local driver name detail
     driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || true)"
     name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || true)"
     if [[ -n "${driver}" ]]; then
-      check_add gpu "NVIDIA driver" ok "${name} — driver ${driver}"
+      detail="${name} — driver ${driver}"
+      [[ -n "${others}" ]] && detail+="; also present: ${others}"
+      check_add gpu "NVIDIA driver" ok "${detail}"
     else
       check_add gpu "NVIDIA driver" warn "nvidia-smi present but returned nothing"
     fi
+  elif has_gpu_vendor nvidia; then
+    check_add gpu "NVIDIA driver" fail \
+      "$(gpu_names nvidia) is installed but nvidia-smi is missing — the NVIDIA driver is not installed"
+  elif [[ -n "${others}" ]]; then
+    check_add gpu "NVIDIA driver" fail \
+      "No NVIDIA GPU — found ${others}. This installer targets NVIDIA; see the AMD sibling project in the README."
   else
-    check_add gpu "NVIDIA driver" fail "nvidia-smi not found — this installer targets NVIDIA"
+    check_add gpu "NVIDIA driver" fail "No display adapter detected — is pciutils installed?"
   fi
 
-  if command -v ffmpeg >/dev/null 2>&1; then
+  # ffmpeg lists h264_nvenc whenever it was built with nvenc support, whether or
+  # not there is an NVIDIA card to run it on — so on an AMD or Intel machine the
+  # old check cheerfully reported the encoder as available. Ask about hardware
+  # first.
+  if ! has_gpu_vendor nvidia && ! command -v nvidia-smi >/dev/null 2>&1; then
+    check_add nvenc "NVENC encoder" info "No NVIDIA GPU — NVENC does not apply"
+  elif command -v ffmpeg >/dev/null 2>&1; then
     if ffmpeg -hide_banner -encoders 2>/dev/null | grep h264_nvenc >/dev/null; then
       check_add nvenc "NVENC encoder" ok "h264_nvenc available (run the test to confirm it actually encodes)"
     else
@@ -332,14 +351,21 @@ do_nvenc_test() {
     printf '{%s,%s}\n' "$(json_str state info)" "$(json_str detail "ffmpeg not installed")"
     return 0
   fi
-  local out="${TMPDIR:-/tmp}/omarchy-resolve-nvenc-test.mp4" log
-  log="$(ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=duration=2 \
-        -c:v h264_nvenc -y "${out}" 2>&1 || true)"
-  if [[ -s "${out}" ]]; then
+  # A fresh name every run, and cleaned up whichever way this ends. The old
+  # fixed path was left behind on failure, and the next run — failing the same
+  # way — found that leftover and called it a pass. A check meant to rule out a
+  # driver problem reported all clear precisely when there was one.
+  local out log rc=0
+  out="$(mktemp -u "${TMPDIR:-/tmp}/omarchy-resolve-nvenc-XXXXXX.mp4")"
+  rm -f "${out}" 2>/dev/null || true
+  if log="$(ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=duration=2 \
+            -c:v h264_nvenc -y "${out}" 2>&1)"; then rc=0; else rc=$?; fi
+  if [[ "${rc}" -eq 0 && -s "${out}" ]]; then
     rm -f "${out}" 2>/dev/null || true
     printf '{%s,%s}\n' "$(json_str state ok)" "$(json_str detail "NVENC encoded a 2-second test clip successfully")"
   else
-    printf '{%s,%s}\n' "$(json_str state fail)" "$(json_str detail "${log:-NVENC produced no output}")"
+    rm -f "${out}" 2>/dev/null || true
+    printf '{%s,%s}\n' "$(json_str state fail)" "$(json_str detail "${log:-NVENC produced no output (ffmpeg exit ${rc})}")"
   fi
 }
 

@@ -67,6 +67,55 @@ run() {
   "$@"
 }
 
+# --------------------------------------------------------------------- GPUs
+# Every display-class PCI device, one per line as "vendor|name". lspci sees the
+# hardware whether or not a driver is loaded, which is what makes "card present
+# but driver missing" tellable from "no such card" — nvidia-smi cannot, since
+# it is absent in both cases. Hybrid machines really do have two: this is
+# written on a Ryzen laptop that reports an RTX 5060 Ti and a Raphael iGPU.
+detect_gpus() {
+  command -v lspci >/dev/null 2>&1 || return 0
+  lspci -mm 2>/dev/null | awk -F'"' '
+    $2 ~ /^(VGA compatible controller|3D controller|Display controller)$/ {
+      vendor = $4; name = $6; v = "other"
+      if (vendor ~ /NVIDIA/)                              v = "nvidia"
+      else if (vendor ~ /Advanced Micro Devices|AMD|ATI/) v = "amd"
+      else if (vendor ~ /Intel/)                          v = "intel"
+      print v "|" name
+    }'
+}
+
+# Comma-separated names of every GPU whose vendor matches $1, or all of them
+# when $1 is empty. Empty output means none matched.
+gpu_names() {
+  local want="${1:-}" line vendor name out=""
+  while IFS='|' read -r vendor name; do
+    [[ -n "${vendor}" ]] || continue
+    [[ -z "${want}" || "${vendor}" == "${want}" ]] || continue
+    out+="${out:+, }${name}"
+  done < <(detect_gpus)
+  printf '%s' "${out}"
+}
+
+# Names of every GPU whose vendor is NOT $1.
+gpu_names_other_than() {
+  local skip="${1:-}" vendor name out=""
+  while IFS='|' read -r vendor name; do
+    [[ -n "${vendor}" ]] || continue
+    [[ "${vendor}" != "${skip}" ]] || continue
+    out+="${out:+, }${name}"
+  done < <(detect_gpus)
+  printf '%s' "${out}"
+}
+
+has_gpu_vendor() {
+  local want="$1" vendor name
+  while IFS='|' read -r vendor name; do
+    [[ "${vendor}" == "${want}" ]] && return 0
+  done < <(detect_gpus)
+  return 1
+}
+
 # ------------------------------------------------------------------ privilege
 is_root() { [[ "${EUID}" -eq 0 ]]; }
 

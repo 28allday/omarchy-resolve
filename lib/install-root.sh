@@ -430,9 +430,18 @@ export QT_AUTO_SCREEN_SCALE_FACTOR=1
 # globally (Omarchy 4 envs.lua). Resolve's bundled Qt has neither plugin —
 # harmless, but unset them so startup stays free of Qt style warnings.
 unset QT_STYLE_OVERRIDE QT_QPA_PLATFORMTHEME
-# For hybrid laptops, optionally force dGPU:
-# export __NV_PRIME_RENDER_OFFLOAD=1
-# export __GLX_VENDOR_LIBRARY_NAME=nvidia
+# Local overrides. This file is rewritten from scratch by every install and
+# update, so edits made here do not survive one — put them in an override file
+# instead. Hybrid laptops forcing the dGPU want:
+#   export __NV_PRIME_RENDER_OFFLOAD=1
+#   export __GLX_VENDOR_LIBRARY_NAME=nvidia
+for override in /etc/omarchy-resolve/wrapper.env \
+                "${XDG_CONFIG_HOME:-${HOME}/.config}/omarchy-resolve/wrapper.env"; do
+  if [[ -r "${override}" ]]; then
+    # shellcheck disable=SC1090
+    source "${override}"
+  fi
+done
 exec /opt/resolve/bin/resolve "$@"
 WRAPPER
   chmod +x "${RESOLVE_WRAPPER}"
