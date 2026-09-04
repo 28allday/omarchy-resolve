@@ -114,6 +114,14 @@ Item {
   signal jobFinished(string kind, bool ok)
 
   // ------------------------------------------------------------- utilities
+  // Is this path one of the ZIPs the last preflight actually found?
+  function zipKnown(path) {
+    if (!path) return false
+    for (var i = 0; i < zips.length; i++)
+      if (String(zips[i].path || "") === path) return true
+    return false
+  }
+
   function appendLog(line) {
     var text = String(line || "")
     if (text === "") return
@@ -195,7 +203,7 @@ Item {
   // ---------------------------------------------------------------- install
   function install() {
     if (busy) return
-    var zip = selectedZip !== "" ? selectedZip : String(info.selectedZip || "")
+    var zip = zipKnown(selectedZip) ? selectedZip : String(info.selectedZip || "")
     if (zip === "") {
       lastError = "No DaVinci Resolve ZIP found in " + String(info.zipDir || "~/Downloads")
       return
@@ -361,6 +369,11 @@ Item {
       }
       try {
         root.info = JSON.parse(String(checkOut.text || "{}"))
+        // The pick only survives while that file is still in Downloads. A
+        // ZIP deleted after the panel first opened must not be what the
+        // next Install sends to pkexec — that costs a password prompt just
+        // to hear "No such ZIP".
+        if (!root.zipKnown(root.selectedZip)) root.selectedZip = ""
         if (root.selectedZip === "") root.selectedZip = String(root.info.selectedZip || "")
         if (!keepJobError) root.lastError = ""
       } catch (e) {
