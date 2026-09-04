@@ -21,6 +21,8 @@ wrong later.
   alone works on any Arch + Hyprland install.
 - **GPU**: NVIDIA, AMD or Intel — see [Your GPU](#your-gpu). Resolve does all
   its work on the GPU, so this is the one requirement it will not run without.
+  Tested on an RTX 5060 Ti, an RX 9060 XT, an Arc B580 and an RTX 3050 laptop
+  with an integrated GPU beside it.
 - **Audio**: PipeWire + Wireplumber 0.5+ (Omarchy default) — the audio fix uses
   the SPA-JSON rule format introduced in 0.5.
 - **Kernel**: any with `snd-aloop` available (`modinfo snd-aloop`).
@@ -248,11 +250,11 @@ while OpenCL stays on the Radeon. CL/GL interop then fails and Resolve hangs on
 Color — the same symptom as the ROCm bug, from an unrelated cause.
 `switcherooctl` is avoided for the same reason: internally it is `DRI_PRIME=1`.
 
-### Intel: experimental
+### Intel: works, but Blackmagic do not support it
 
 Blackmagic does not support Intel GPUs on Linux. With `intel-compute-runtime`
 installed the Arc appears as an OpenCL device and editing, playback and
-transcode generally work, but the Neural Engine, some effects, Fairlight FX and
+transcode work — this has been run on an Arc B580 — but the Neural Engine, some effects, Fairlight FX and
 noise reduction may fall back to the CPU or fail. The install sets it up
 properly and says so on the Install tab; it cannot make it supported.
 
