@@ -143,9 +143,14 @@ into `/root`, so the engine refuses to do it.
 7. **Makes the directories Resolve writes into inside the prefix writable.**
    Most of its support directories live under `~/.local/share/DaVinciResolve`
    and it creates those itself; a handful land in the root-owned install tree
-   instead — `.license` for [Studio activation](#studio-licensing), plus
-   `Apple Immersive`, `Extras`, `Fairlight` and `logs`. Resolve creates each at
-   startup, and treats being denied `Apple Immersive` as fatal.
+   instead — `.license` for [Studio activation](#studio-licensing), plus the
+   immersive-video folder, `Extras`, `Fairlight` and `logs`. Resolve creates
+   each at startup, and treats being denied the immersive-video one as fatal:
+   it exits before any window appears, which from the app menu looks like
+   Resolve simply not starting. That folder is called `Apple Immersive` up to
+   Resolve 21.0.x and `Immersive` from 21.1; both names are created, so the
+   same install works either side of the rename. `omarchy-resolve diagnose`
+   checks whichever one your installed version needs.
 8. **Substitutes `RESOLVE_INSTALL_LOCATION`** in the four `.desktop` files
    Blackmagic ships. Their own installer does this; ours installs from the
    extracted AppImage, where nothing did. A `Path=` that does not resolve is
@@ -422,11 +427,27 @@ Failed to create application support directories
 ```
 
 Resolve could not create one of the directories it wants inside `/opt/resolve`
-— it makes them `0777` at startup, and the install tree is root-owned. Resolve
-names the directory in its own log:
+— it makes them `0777` at startup, and the install tree is root-owned. Run
+
+```bash
+bin/omarchy-resolve diagnose
+```
+
+and read the **Resolve support folders** check: it names the missing directory
+and the exact command to create it. Resolve sometimes also names it in its own
+log, though on this failure it can die before the log is opened:
 
 ```bash
 grep "mkdir failed for directory" ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
+```
+
+The usual cause on **Resolve 21.1 or newer** is the immersive-video folder
+rename. 21.1 changed the name from `Apple Immersive` to `Immersive`, and an
+install made by omarchy-resolve 0.3.0 or earlier created only the old name.
+Re-running the install repairs it, or create the folder by hand:
+
+```bash
+sudo install -d -m 7777 /opt/resolve/Immersive
 ```
 
 ### The bar covers Resolve's menu bar, or a dialog traps the pointer
@@ -446,7 +467,7 @@ RPATH pass skips files already correct.
 | `/opt/resolve` | The application |
 | `/opt/resolve/.omarchy-resolve.json` | Which version, from which ZIP, when |
 | `/opt/resolve/.license` | Studio activation — made writable, or Studio licensing fails |
-| `/opt/resolve/{Apple Immersive,Extras,Fairlight,logs}` | Directories Resolve creates at startup — made writable; denied `Apple Immersive` it will not launch at all |
+| `/opt/resolve/{Apple Immersive,Immersive,Extras,Fairlight,logs}` | Directories Resolve creates at startup — made writable; denied the immersive-video one (`Apple Immersive` up to 21.0.x, `Immersive` from 21.1) it will not launch at all |
 | `/usr/local/bin/resolve-omarchy` | XWayland wrapper (the real launcher) |
 | `/usr/bin/davinci-resolve` | Convenience shim to the wrapper |
 | `/usr/share/applications/*.desktop`, `/usr/share/icons/hicolor/**` | Menu entries and icons |

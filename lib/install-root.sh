@@ -471,12 +471,15 @@ root_install_tree() {
   # Resolve makes its own support directories under ~/.local/share/DaVinciResolve
   # — except the few it insists on putting inside the install prefix, which the
   # copy above leaves root-owned and unwritable. It mkdirs each 0777 at startup.
-  # "Apple Immersive" is the fatal one:
+  # The immersive-video directory is the fatal one; denied it, Resolve prints
   #
   #   Failed to create application support directories
   #
   # and exits before any window exists, so from the app menu it reads as
   # Resolve simply not launching. Same permissions as .license, same reasons.
+  # It is named "Apple Immersive" up to 21.0.x and "Immersive" from 21.1 — both
+  # are created, since the unused one costs nothing and guessing the version
+  # wrong costs a launch.
   #
   # "Extras" (the download manager's package store, which reports "DDM init
   # failed") and "Fairlight" are not fatal but log errors on every launch.
@@ -485,8 +488,9 @@ root_install_tree() {
   # names them itself, and its stderr is folded into the same file:
   #   grep "mkdir failed for directory" \
   #     ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
+  # The list itself lives in lib/common.sh, so diagnose checks the same set.
   local support_dir
-  for support_dir in "Apple Immersive" "Extras" "Fairlight" "logs"; do
+  for support_dir in "${RESOLVE_SUPPORT_DIRS[@]}"; do
     run mkdir -p "${RESOLVE_PREFIX}/${support_dir}"
     run chmod 7777 "${RESOLVE_PREFIX}/${support_dir}"
   done

@@ -148,6 +148,73 @@ diag_license() {
   fi
 }
 
+# The support directories Resolve makes inside its own install prefix. Denied
+# the immersive-video one it exits before any window with only
+# "Failed to create application support directories" on stderr, which from the
+# app menu reads as Resolve simply not launching — and diagnose used to report
+# all-green through it (28allday/omarchy-resolve#1). Resolve 21.1 renamed that
+# directory "Apple Immersive" -> "Immersive", so an install made by an older
+# copy of this tool has the wrong one and no amount of reinstalling Resolve
+# fixes it. Only meaningful once Resolve is installed.
+diag_support_dirs() {
+  [[ -x "${RESOLVE_PREFIX}/bin/resolve" ]] || return 0
+
+  # Which name this Resolve actually wants. The stamp is authoritative when
+  # there is one; otherwise fall back to the version in Resolve's own docs.
+  # Unknown means unknown — do not guess a version and fail on it.
+  local ver expected=""
+  ver="$(stamp_field version)"
+  [[ -n "${ver}" ]] || ver="$(installed_docs_version)"
+  if [[ "${ver}" =~ ^([0-9]+)\.([0-9]+) ]]; then
+    if (( BASH_REMATCH[1] > 21 || (BASH_REMATCH[1] == 21 && BASH_REMATCH[2] >= 1) )); then
+      expected="Immersive"
+    else
+      expected="Apple Immersive"
+    fi
+  fi
+
+  # Only the immersive name this version actually wants is required. A 21.1
+  # install still carrying an inert "Apple Immersive" from an older copy of
+  # this tool is correct, and must not be reported as anything.
+  local dir required=()
+  for dir in "${RESOLVE_SUPPORT_DIRS[@]}"; do
+    if [[ -n "${expected}" \
+       && " ${RESOLVE_SUPPORT_DIRS_FATAL[*]} " == *" ${dir} "* \
+       && "${dir}" != "${expected}" ]]; then
+      continue
+    fi
+    required+=("${dir}")
+  done
+
+  local path bad=() bad_fatal=0
+  for dir in "${required[@]}"; do
+    path="${RESOLVE_PREFIX}/${dir}"
+    [[ -d "${path}" && -w "${path}" ]] && continue
+    bad+=("${dir}")
+    [[ " ${RESOLVE_SUPPORT_DIRS_FATAL[*]} " == *" ${dir} "* ]] && bad_fatal=$(( bad_fatal + 1 ))
+  done
+
+  if (( ${#bad[@]} == 0 )); then
+    check_add supportdirs "Resolve support folders" ok \
+      "All ${#required[@]} folders Resolve creates under ${RESOLVE_PREFIX} exist and are writable"
+    return
+  fi
+
+  local fix="Re-run the install, or create it by hand: sudo install -d -m 7777"
+  if [[ -n "${expected}" ]] && (( bad_fatal )); then
+    check_add supportdirs "Resolve support folders" fail \
+      "${RESOLVE_PREFIX}/${expected} is missing or not writable and Resolve ${ver} needs it — Resolve exits at startup with \"Failed to create application support directories\" and never opens a window. Fix: ${fix} '${RESOLVE_PREFIX}/${expected}'"
+  elif [[ -z "${expected}" ]] && (( bad_fatal == ${#RESOLVE_SUPPORT_DIRS_FATAL[@]} )); then
+    # Version unreadable, so which of the two names matters is unknown — but
+    # neither is usable, so whichever it is, Resolve will not launch.
+    check_add supportdirs "Resolve support folders" fail \
+      "Neither ${RESOLVE_PREFIX}/Immersive nor '${RESOLVE_PREFIX}/Apple Immersive' is writable, and the installed version could not be read to say which this Resolve needs — it will not launch. Fix: ${fix} '${RESOLVE_PREFIX}/Immersive'"
+  else
+    check_add supportdirs "Resolve support folders" warn \
+      "Missing or unwritable: ${bad[*]/#/${RESOLVE_PREFIX}/} — not fatal, but Resolve logs an error for each on every launch. Fix: re-run the install"
+  fi
+}
+
 # Which card Resolve will compute on, and whether the stack behind it is
 # actually there. "nvidia-smi not found" used to be the whole diagnosis, which
 # reads identically on a machine with no NVIDIA card and on one whose driver
@@ -338,6 +405,7 @@ do_diagnose() {
   diag_hypr
   diag_audio
   diag_license
+  diag_support_dirs
   diag_gpu
   diag_encoder
   diag_aacfix

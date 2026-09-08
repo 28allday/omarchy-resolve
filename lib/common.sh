@@ -202,6 +202,23 @@ json_bool() { local v=false; [[ "$2" == "1" || "$2" == "true" ]] && v=true; prin
   RESOLVE_ENV_DIR="/etc/omarchy-resolve"
   ALOOP_CONF="/etc/modules-load.d/snd-aloop.conf"
 
+  # The support directories Resolve creates inside its own install prefix at
+  # startup, 0777, rather than under ~/.local/share/DaVinciResolve. The copied
+  # tree leaves the prefix root-owned, so each has to be pre-created writable
+  # or Resolve's own mkdir fails. Defined here rather than in install-root.sh
+  # because diagnose has to check exactly the set the installer creates — the
+  # 21.1 rename below was invisible for a day precisely because the two could
+  # disagree.
+  #
+  # 21.1 renamed the immersive-video directory "Apple Immersive" -> "Immersive"
+  # (28allday/omarchy-resolve#1). Both names are created: the old one is inert
+  # on 21.1, and 21.0.x still needs it. Being denied either is fatal — Resolve
+  # prints "Failed to create application support directories" and exits before
+  # any window, so from the app menu it reads as simply not launching.
+  RESOLVE_SUPPORT_DIRS=("Apple Immersive" "Immersive" "Extras" "Fairlight" "logs")
+  # The subset Resolve treats as fatal, by version. Everything else only logs.
+  RESOLVE_SUPPORT_DIRS_FATAL=("Apple Immersive" "Immersive")
+
   # The AMD compute stack, pinned. ROCm 7.2.0 broke Resolve on every AMD GPU
   # (clCreateContext fails outright, or hangs on the Color page); 7.1.1 is the
   # last release confirmed working everywhere, and all six packages are still
