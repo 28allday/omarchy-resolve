@@ -455,6 +455,14 @@ sudo install -d -m 7777 /opt/resolve/Immersive
 Current Omarchy fixes both itself. On an older one, the engine installs the
 rules; run `bin/omarchy-resolve diagnose` to see which copy is in force.
 
+### Dragging files in from the file manager does nothing
+
+Resolve runs under XWayland (that is what the wrapper is for), and Omarchy's
+file manager, Nautilus, is a native Wayland app. Drags between the two never
+reach Resolve. Import from Resolve's own Media page or **File → Import**
+instead, or drag from a file manager that works with XWayland windows —
+Thunar is reported to work, though it does not follow the Omarchy theme.
+
 ### Missing library errors
 
 Usually a partial install. Re-run the install — it is safe to repeat, and the
