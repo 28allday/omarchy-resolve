@@ -124,8 +124,11 @@ diag_audio() {
 
   local bridge="${HOME}/.config/pipewire/pipewire.conf.d/50-resolve-aloop-bridge.conf"
   local wprule="${HOME}/.config/wireplumber/wireplumber.conf.d/51-resolve-aloop-no-default.conf"
-  if [[ -f "${bridge}" && -f "${wprule}" ]]; then
-    check_add aloopbridge "Monitor audio bridge" ok "PipeWire loopback bridge and Wireplumber default-sink exclusion both in place"
+  local wpcapture="${HOME}/.config/wireplumber/wireplumber.conf.d/52-resolve-aloop-capture.conf"
+  if [[ -f "${bridge}" && -f "${wprule}" && -f "${wpcapture}" ]]; then
+    check_add aloopbridge "Monitor audio bridge" ok "PipeWire loopback bridge, Wireplumber default-sink exclusion and capture settings all in place"
+  elif [[ -f "${bridge}" && -f "${wprule}" ]]; then
+    check_add aloopbridge "Monitor audio bridge" warn "Bridge in place but not its capture settings — playback reaches the bridge as silence and PipeWire floods the journal with get_status errors. Reinstall to add them"
   elif [[ -f "${bridge}" ]]; then
     check_add aloopbridge "Monitor audio bridge" warn "Bridge present but no Wireplumber rule — aloop can steal the default sink mid-session and silence playback"
   else

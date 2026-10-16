@@ -182,7 +182,10 @@ Two follow-on pieces come with it: a PipeWire loopback module bridging the
 loopback's capture side to your default sink (otherwise monitoring is silent),
 and a Wireplumber rule keeping the loopback out of the default-sink rotation
 (otherwise it promotes itself the moment Resolve plays audio, and the bridge
-feeds itself instead of your speakers).
+feeds itself instead of your speakers). A second Wireplumber rule sets how the
+bridge opens the loopback: raw, interleaved and without mmap, the way Resolve
+writes to it. PipeWire's default opening goes silent when Resolve plays on
+kernel 6.8 and later, and floods the journal on PipeWire 1.6.
 
 Skip all of it with the panel toggle or `--no-aloop` if you have a dedicated
 audio interface Resolve is happy with.
@@ -396,6 +399,18 @@ cat ~/.config/wireplumber/wireplumber.conf.d/51-resolve-aloop-no-default.conf
 systemctl --user restart wireplumber pipewire pipewire-pulse
 ```
 
+### No sound while editing, or the journal fills with `get_status error`
+
+Thousands of `spa.alsa: get_status error: Unknown error N` lines a minute, or
+playback in Resolve that never reaches your speakers, mean the bridge is
+opening the loopback the old way. Installs before 0.3.2 lack the capture rule;
+reinstalling adds it, then:
+
+```bash
+cat ~/.config/wireplumber/wireplumber.conf.d/52-resolve-aloop-capture.conf
+systemctl --user restart wireplumber pipewire pipewire-pulse
+```
+
 ### Resolve will not start
 
 ```bash
@@ -486,6 +501,7 @@ RPATH pass skips files already correct.
 | `~/.local/share/applications/davinci-resolve-wrapper.desktop` | User entry, outranks the system one |
 | `~/.config/pipewire/pipewire.conf.d/50-resolve-aloop-bridge.conf` | Monitor audio bridge |
 | `~/.config/wireplumber/wireplumber.conf.d/51-resolve-aloop-no-default.conf` | Keeps the loopback out of the default-sink rotation |
+| `~/.config/wireplumber/wireplumber.conf.d/52-resolve-aloop-capture.conf` | How the bridge opens the loopback (rewritten on every install) |
 | `~/.config/hypr/davinci-resolve.lua` | Window rules, only on an Omarchy that needs them |
 | `~/.local/share/DaVinciResolve/Fusion/Scripts/Utility/AAC Fix.py` | AAC Fix, in Resolve's Scripts menu |
 | `~/.local/bin/resolve-aac-fix` | The same script as a command (symlink to the above) |

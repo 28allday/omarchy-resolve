@@ -134,6 +134,7 @@ do_uninstall_user() {
   step aloopbridge "Removing PipeWire bridge…"
   run rm -f "${HOME}/.config/pipewire/pipewire.conf.d/50-resolve-aloop-bridge.conf"
   run rm -f "${HOME}/.config/wireplumber/wireplumber.conf.d/51-resolve-aloop-no-default.conf"
+  run rm -f "${HOME}/.config/wireplumber/wireplumber.conf.d/52-resolve-aloop-capture.conf"
   if systemctl --user is-active --quiet pipewire 2>/dev/null; then
     run systemctl --user restart wireplumber pipewire pipewire-pulse 2>/dev/null || true
   fi

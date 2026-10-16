@@ -261,6 +261,44 @@ CONF
     log "  ${wp_rule} already in place"
   fi
 
+  # How the aloop capture is opened. Rewritten on every install, unlike the two
+  # files above, so installs that predate it pick it up. PipeWire's default
+  # opens it as front:0 — softvol over hw — mmap'd and planar, and three things
+  # go wrong:
+  #   - PipeWire 1.6 can commit more capture frames than are available; softvol
+  #     does not catch it, its pointers wrap, and every graph cycle logs
+  #     "get_status error: Unknown error N" (thousands of lines a minute).
+  #   - Since Linux 6.8 aloop stops a capture whose access mode differs from the
+  #     playback side. Resolve writes interleaved, so the planar capture drains
+  #     and the bridge carries silence.
+  #   - softvol ties the capture gain to the hidden aloop sink's volume.
+  # Plain reads (no mmap), interleaved S32 and raw hw avoid all three. The
+  # path alone is not enough — without disable-mmap it loops on xruns.
+  local wp_capture="${wp_dir}/52-resolve-aloop-capture.conf"
+  cat > "${wp_capture}" <<'CONF'
+# DaVinci Resolve aloop — how the bridge's capture side is opened.
+# Managed by omarchy-resolve; rewritten on every install. Opens the loopback
+# capture as raw hw with plain interleaved reads instead of PipeWire's default
+# (softvol front:0, mmap, planar), which floods the journal with
+# "get_status error" lines on PipeWire 1.6 and goes silent on kernel 6.8+
+# when Resolve plays.
+monitor.alsa.rules = [
+  {
+    matches = [
+      { node.name = "alsa_input.platform-snd_aloop.0.analog-stereo" }
+    ]
+    actions = {
+      update-props = {
+        api.alsa.disable-mmap = true
+        audio.format          = "S32LE"
+        api.alsa.path         = "hw:Loopback,0,0"
+      }
+    }
+  }
+]
+CONF
+  log "  Wrote ${wp_capture}"
+
   # Wireplumber first, so its monitor reapplies the alsa rule when pipewire
   # republishes the aloop nodes.
   if systemctl --user is-active --quiet pipewire 2>/dev/null; then
